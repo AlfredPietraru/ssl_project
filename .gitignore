@@ -1,0 +1,8 @@
+__pycache__
+.codex
+venv_ssl_proj
+data
+decizie_proiect.txt
+.env
+pretrained_data
+features
