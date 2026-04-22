@@ -3,21 +3,17 @@ import logging
 import os
 from pathlib import Path
 
-import matplotlib
-import numpy as np
-import pandas as pd
-import torch
-import torchvision.transforms as T
-from sklearn.decomposition import PCA
-from torch.utils.data import DataLoader
-from wildlife_datasets.datasets import AnimalCLEF2026
-
-from main_utils import download_mega_descriptor_model_feature_extraction
-
-
 # Keep matplotlib cache writable when running from restricted environments.
 os.environ.setdefault("MPLCONFIGDIR", str(Path("tmp/matplotlib").resolve()))
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+from sklearn.decomposition import PCA
+
+
+import matplotlib  # noqa: E402
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
@@ -26,96 +22,84 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("EMBEDDINGS_TEST")
 
 
-def build_transform(image_size: int = 384) -> T.Compose:
-    return T.Compose(
-        [
-            T.Resize((image_size, image_size)),
-            T.ToTensor(),
-            T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ]
-    )
+def clean_string_array(values, missing_value: str = "unknown") -> np.ndarray:
+    series = pd.Series(values, dtype="object")
+    series = series.where(series.notna(), missing_value)
+    series = series.astype(str).str.strip()
+    series = series.mask(series.eq("") | series.str.lower().isin({"nan", "none"}), missing_value)
+    return series.to_numpy(dtype=str)
 
 
-def load_test_dataset(root: str, max_samples: int | None = None) -> AnimalCLEF2026:
-    dataset_full = AnimalCLEF2026(
-        root,
-        transform=None,
-        load_label=True,
-        factorize_label=True,
-        check_files=False,
-    )
-    dataset_test = dataset_full.get_subset(dataset_full.df["split"] == "test")
-    dataset_test.set_transform(build_transform())
+def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    return values / np.maximum(norms, eps)
+
+
+def load_embedding_artifacts(
+    embeddings_dir: Path,
+    model_name: str,
+    split: str,
+    max_samples: int | None = None,
+    normalize: bool = False,
+) -> tuple[np.ndarray, pd.DataFrame]:
+    embeddings_path = embeddings_dir / f"{model_name}_{split}_embeddings.npy"
+    metadata_path = embeddings_dir / f"{model_name}_{split}_metadata.csv"
+
+    if not embeddings_path.exists():
+        raise FileNotFoundError(
+            f"Could not find {embeddings_path}. Run 00_embedding_extraction.py first."
+        )
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Could not find {metadata_path}. Run 00_embedding_extraction.py first."
+        )
+
+    embeddings = np.load(embeddings_path)
+    metadata = pd.read_csv(metadata_path)
+
+    if len(metadata) != len(embeddings):
+        raise ValueError(
+            f"{split} artifact row mismatch: {len(metadata)} metadata rows but "
+            f"{len(embeddings)} embeddings."
+        )
+
+    if "embedding_index" in metadata.columns:
+        expected = np.arange(len(metadata))
+        actual = metadata["embedding_index"].to_numpy()
+        if not np.array_equal(actual, expected):
+            raise ValueError(
+                f"{metadata_path} has non-contiguous embedding_index values. "
+                "The CSV rows must align exactly with the .npy rows."
+            )
+    else:
+        metadata.insert(0, "embedding_index", np.arange(len(metadata)))
 
     if max_samples is not None:
-        max_samples = min(max_samples, len(dataset_test))
-        dataset_test = dataset_test.get_subset(list(range(max_samples)))
+        max_samples = min(max_samples, len(metadata))
+        embeddings = embeddings[:max_samples]
+        metadata = metadata.iloc[:max_samples].reset_index(drop=True).copy()
 
-    return dataset_test
+    if normalize:
+        embeddings = normalize_rows(embeddings)
 
-
-def extract_embeddings_from_batch(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
-    with torch.no_grad():
-        if hasattr(model, "forward_features"):
-            features = model.forward_features(batch)
-            if hasattr(model, "forward_head"):
-                try:
-                    features = model.forward_head(features, pre_logits=True)
-                except TypeError:
-                    features = model.forward_head(features)
-        else:
-            features = model(batch)
-
-    if isinstance(features, (tuple, list)):
-        features = features[0]
-    if features.ndim > 2:
-        features = torch.flatten(features, start_dim=1)
-    return features
+    logger.info("Loaded %s embeddings from %s with shape %s", split, embeddings_path, embeddings.shape)
+    logger.info("Loaded %s metadata from %s", split, metadata_path)
+    return embeddings.astype(np.float32), metadata
 
 
-def resolve_label_strings(dataset: AnimalCLEF2026) -> np.ndarray:
-    if hasattr(dataset, "labels_string"):
-        return np.asarray(dataset.labels_string)
-
-    if "identity" in dataset.df.columns:
-        return dataset.df["identity"].astype(str).to_numpy()
-
-    return dataset.df.iloc[:, 0].astype(str).to_numpy()
+def resolve_label_strings(metadata: pd.DataFrame) -> np.ndarray:
+    if "identity" in metadata.columns:
+        return clean_string_array(metadata["identity"])
+    if "label_string" in metadata.columns:
+        return clean_string_array(metadata["label_string"])
+    return np.array(["unknown"] * len(metadata), dtype=str)
 
 
-def resolve_species_strings(dataset: AnimalCLEF2026) -> np.ndarray:
-    for candidate in ("species", "category", "dataset"):
-        if candidate in dataset.df.columns:
-            return dataset.df[candidate].astype(str).to_numpy()
-    return np.array(["unknown"] * len(dataset))
-
-
-def compute_embeddings(
-    dataset: AnimalCLEF2026,
-    model: torch.nn.Module,
-    batch_size: int,
-    device: torch.device,
-) -> np.ndarray:
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=device.type == "cuda",
-    )
-
-    model = model.to(device)
-    model.eval()
-
-    all_embeddings = []
-    for step, (images, _) in enumerate(dataloader, start=1):
-        images = images.to(device)
-        embeddings = extract_embeddings_from_batch(model, images)
-        all_embeddings.append(embeddings.detach().cpu())
-        if step % 10 == 0 or step == len(dataloader):
-            logger.info("Processed %s/%s batches", step, len(dataloader))
-
-    return torch.cat(all_embeddings, dim=0).numpy()
+def resolve_species_strings(metadata: pd.DataFrame) -> np.ndarray:
+    for candidate in ("species", "species_string", "category", "dataset"):
+        if candidate in metadata.columns:
+            return clean_string_array(metadata[candidate])
+    return np.array(["unknown"] * len(metadata), dtype=str)
 
 
 def plot_embeddings(
@@ -123,6 +107,7 @@ def plot_embeddings(
     labels: np.ndarray,
     species: np.ndarray,
     output_path: Path,
+    my_type : str
 ) -> None:
     unique_labels, label_ids = np.unique(labels, return_inverse=True)
     unique_species, species_ids = np.unique(species, return_inverse=True)
@@ -138,7 +123,7 @@ def plot_embeddings(
         edgecolors="none",
     )
 
-    ax.set_title("AnimalCLEF2026 Test Embeddings Projected with PCA")
+    ax.set_title(f"AnimalCLEF2026 {my_type} Embeddings Projected with PCA")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     ax.grid(alpha=0.2)
@@ -167,26 +152,30 @@ def plot_embeddings(
     plt.close(fig)
 
 
-def compute_class_separation():
-    csv_path = Path("artifacts/animalclef2026_test_pca.csv")
-    output_plot = Path("artifacts/animalclef2026_test_pca_by_class.png")
-
+def compute_class_separation(
+    my_type: str,
+    csv_path: Path,
+    output_plot: Path,
+    separation_path: Path,
+) -> None:
     if not csv_path.exists():
         raise FileNotFoundError(
             f"Could not find {csv_path}. Generate the PCA CSV first or point this function to an existing file."
         )
 
     df = pd.read_csv(csv_path)
-    required_columns = {"pc1", "pc2", "species"}
+    class_column = "species_string" if "species_string" in df.columns else "species"
+    required_columns = {"pc1", "pc2", class_column}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
         raise ValueError(f"CSV is missing required columns: {sorted(missing_columns)}")
 
-    plot_df = df.dropna(subset=["pc1", "pc2", "species"]).copy()
+    plot_df = df.dropna(subset=["pc1", "pc2", class_column]).copy()
     if plot_df.empty:
         raise ValueError("No valid PCA rows with class labels were found in the CSV.")
 
-    classes = sorted(plot_df["species"].astype(str).unique())
+    plot_df[class_column] = clean_string_array(plot_df[class_column])
+    classes = sorted(plot_df[class_column].unique())
     colors = plt.cm.tab10(np.linspace(0, 1, len(classes)))
 
     fig, ax = plt.subplots(figsize=(12, 9))
@@ -194,7 +183,7 @@ def compute_class_separation():
     within_class_scatter = {}
 
     for color, class_name in zip(colors, classes):
-        class_df = plot_df[plot_df["species"].astype(str) == class_name]
+        class_df = plot_df[plot_df[class_column] == class_name]
         points = class_df[["pc1", "pc2"]].to_numpy()
         centroid = points.mean(axis=0)
         class_centroids[class_name] = centroid
@@ -229,7 +218,7 @@ def compute_class_separation():
             va="bottom",
         )
 
-    ax.set_title("AnimalCLEF2026 Test PCA Colored by Class")
+    ax.set_title(f"AnimalCLEF2026 {my_type} PCA Colored by Class")
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     ax.grid(alpha=0.2)
@@ -247,8 +236,10 @@ def compute_class_separation():
                 {"class_a": class_a, "class_b": class_b, "centroid_distance": distance}
             )
 
-    separation_df = pd.DataFrame(centroid_rows).sort_values("centroid_distance", ascending=False)
-    separation_path = Path("artifacts/animalclef2026_class_separation.csv")
+    separation_df = pd.DataFrame(
+        centroid_rows,
+        columns=["class_a", "class_b", "centroid_distance"],
+    ).sort_values("centroid_distance", ascending=False)
     separation_df.to_csv(separation_path, index=False)
 
     logger.info("Saved class-only PCA plot to %s", output_plot)
@@ -258,13 +249,13 @@ def compute_class_separation():
         logger.info("Centroid distances between classes:\n%s", separation_df.to_string(index=False))
 
 def save_projection_table(
-    dataset: AnimalCLEF2026,
+    metadata: pd.DataFrame,
     pca_embeddings: np.ndarray,
     labels: np.ndarray,
     species: np.ndarray,
     output_path: Path,
 ) -> None:
-    df = dataset.df.reset_index(drop=True).copy()
+    df = metadata.reset_index(drop=True).copy()
     df["label_string"] = labels
     df["species_string"] = species
     df["pc1"] = pca_embeddings[:, 0]
@@ -272,54 +263,33 @@ def save_projection_table(
     df.to_csv(output_path, index=False)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Extract MegaDescriptor embeddings for AnimalCLEF2026 test images and visualize them with PCA."
-    )
-    parser.add_argument("--root", default="data", help="Dataset root directory.")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size for inference.")
-    parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=None,
-        help="Optional limit for quick experiments on a subset of the test split.",
-    )
-    parser.add_argument(
-        "--output-plot",
-        default="artifacts/animalclef2026_test_pca.png",
-        help="Path to the saved PCA scatter plot.",
-    )
-    parser.add_argument(
-        "--output-csv",
-        default="artifacts/animalclef2026_test_pca.csv",
-        help="Path to the saved table with PCA coordinates.",
-    )
-    args = parser.parse_args()
-
-    root = Path(args.root)
-    if not root.exists():
-        raise FileNotFoundError(
-            f"Dataset root '{root}' does not exist. Run download_dataset() first so the AnimalCLEF2026 files are available."
-        )
-
-    output_plot = Path(args.output_plot)
-    output_csv = Path(args.output_csv)
+def run_split(
+    my_type: str,
+    embeddings_dir: Path,
+    model_name: str,
+    max_samples: int | None,
+    normalize: bool,
+    output_plot: Path,
+    output_csv: Path,
+) -> None:
     output_plot.parent.mkdir(parents=True, exist_ok=True)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info("Using device: %s", device)
-
-    dataset_test = load_test_dataset(str(root), max_samples=args.max_samples)
-    labels = resolve_label_strings(dataset_test)
-    species = resolve_species_strings(dataset_test)
-    logger.info("Loaded %s test samples", len(dataset_test))
-    logger.info("Found %s unique identities and %s unique species groups", len(np.unique(labels)), len(np.unique(species)))
-
-    logger.info("Started downloading the model.")
-    model = download_mega_descriptor_model_feature_extraction()
-    logger.info("Model download was succesfull.")
-    embeddings = compute_embeddings(dataset_test, model, args.batch_size, device)
+    embeddings, metadata = load_embedding_artifacts(
+        embeddings_dir=embeddings_dir,
+        model_name=model_name,
+        split=my_type,
+        max_samples=max_samples,
+        normalize=normalize,
+    )
+    labels = resolve_label_strings(metadata)
+    species = resolve_species_strings(metadata)
+    logger.info("Loaded %s %s samples", len(metadata), my_type)
+    logger.info(
+        "Found %s unique identities and %s unique species groups",
+        len(np.unique(labels)),
+        len(np.unique(species)),
+    )
     logger.info("Embedding matrix shape: %s", embeddings.shape)
 
     pca = PCA(n_components=2, random_state=42)
@@ -331,13 +301,76 @@ def main() -> None:
         pca.explained_variance_ratio_.sum(),
     )
 
-    plot_embeddings(pca_embeddings, labels, species, output_plot)
-    save_projection_table(dataset_test, pca_embeddings, labels, species, output_csv)
+    plot_embeddings(pca_embeddings, labels, species, output_plot, my_type)
+    save_projection_table(metadata, pca_embeddings, labels, species, output_csv)
 
     logger.info("Saved PCA plot to %s", output_plot)
     logger.info("Saved PCA coordinates to %s", output_csv)
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Visualize precomputed AnimalCLEF2026 embeddings from data_embeddings with PCA."
+    )
+    parser.add_argument(
+        "--embeddings-dir",
+        default="data_embeddings",
+        help="Directory containing row-aligned .npy embeddings and metadata CSV artifacts.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default="mega",
+        help="Prefix used in artifact filenames, e.g. mega_train_embeddings.npy.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=("train", "test", "both"),
+        default="both",
+        help="Dataset split to process.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Optional row limit for quick experiments on each selected split.",
+    )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="L2-normalize loaded embeddings before PCA.",
+    )
+    parser.add_argument(
+        "--output-plot",
+        default=None,
+        help="Path to the saved PCA scatter plot. Only valid when --split is train or test.",
+    )
+    parser.add_argument(
+        "--output-csv",
+        default=None,
+        help="Path to the saved table with PCA coordinates. Only valid when --split is train or test.",
+    )
+    args = parser.parse_args()
+
+    embeddings_dir = Path(args.embeddings_dir)
+    if not embeddings_dir.exists():
+        raise FileNotFoundError(f"Embeddings directory '{embeddings_dir}' does not exist.")
+
+    selected_splits = ("train", "test") if args.split == "both" else (args.split,)
+    if len(selected_splits) > 1 and (args.output_plot or args.output_csv):
+        raise ValueError("--output-plot and --output-csv can only be used with a single split.")
+
+    for split in selected_splits:
+        output_plot = Path(args.output_plot or f"artifacts/animalclef2026_{split}_pca.png")
+        output_csv = Path(args.output_csv or f"artifacts/animalclef2026_{split}_pca.csv")
+        run_split(
+            split,
+            embeddings_dir,
+            args.model_name,
+            args.max_samples,
+            args.normalize,
+            output_plot,
+            output_csv,
+        )
+
 if __name__ == "__main__":
-    # main()
-    compute_class_separation()
+    main()

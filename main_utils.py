@@ -39,6 +39,7 @@ def download_mega_descriptor_model_feature_extraction():
         m = timm.create_model("hf-hub:BVRA/MegaDescriptor-L-384", pretrained=True)
     except Exception:
         logger.exception("Model for embeddings failed downloading...")
+        raise
     m = m.eval()
     return m
 
@@ -56,4 +57,3 @@ if __name__ == "__main__":
         print("empty dataset")
         exit(1)
     print(dataset.metadata)
-
