@@ -55,7 +55,13 @@ THE PAPER IS FROM 2016 really old, good for understanding the task but really ol
 penultimate layer of the network -> in our case the results after applying embedding model -> (called Activation Vector AV) 
 #### Ideas paper 3:
 never crossed my mind to check, does the embedding model properly separates the space -> for all 3 / 4 classes?
-If it does there is no point in modifying the weights of the embedding model. 
+If it does there is no point in modifying the weights of the embedding model.
 
 
-
+Sugestii Slide-uri:
+1 descriem problema -> identificare de entitati si clasificare 
+2 prezentam rezultatele
+3. discutam despre setul de date
+4 descriem metoda - si din ce lucrari ne-am inspirat, si ce alte lucrari am mai citit
+5 descriem metoda care a iesit mai prost
+6. va multumim!
