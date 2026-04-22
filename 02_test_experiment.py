@@ -38,22 +38,35 @@ def make_cluster_label(*parts: object) -> str:
     return "cluster_" + "_".join(safe_label_part(part) for part in parts)
 
 
-def submission_identity_label(identity: object, dataset: object, species: object) -> str:
+def canonical_known_identity_label(identity: object, dataset: object, species: object) -> str:
     identity_part = safe_label_part(identity)
     dataset_part = safe_label_part(dataset)
     species_part = safe_label_part(species).lower()
-    species_tokens = {species_part}
+    species_tokens = {
+        "lynx",
+        "salamander",
+        "turtle",
+        "loggerhead",
+        "loggerhead_turtle",
+        "lizard",
+        species_part,
+    }
     if "_" in species_part:
         species_tokens.update(token for token in species_part.split("_") if token)
 
     prefix = f"{dataset_part}_"
-    if identity_part.startswith(prefix):
-        suffix = identity_part[len(prefix):]
-        head, separator, tail = suffix.partition("_")
-        if separator and head.lower() in species_tokens:
-            return f"{dataset_part}_{tail}"
+    if not identity_part.startswith(prefix):
+        return identity_part
 
-    return identity_part
+    suffix_parts = [part for part in identity_part[len(prefix):].split("_") if part]
+    suffix_parts = [
+        part for part in suffix_parts
+        if part.lower() not in species_tokens
+    ]
+    if len(suffix_parts) == 1 and re.fullmatch(r"t\d+", suffix_parts[0], flags=re.IGNORECASE):
+        suffix_parts[0] = str(int(suffix_parts[0][1:]))
+
+    return "_".join([dataset_part, *suffix_parts]) if suffix_parts else dataset_part
 
 
 def clean_string_series(values: pd.Series, missing_value: str = "unknown") -> pd.Series:
@@ -510,7 +523,11 @@ def run_species_experiment(
 
     prototypes, prototype_identities = build_identity_prototypes(train_embeddings, train_df)
     best_coarse_clusters = np.full(len(test_embeddings), -1, dtype=int)
-    if known_match_strategy == "prototype":
+    if len(prototype_identities) == 0:
+        known_mask = np.full(len(test_embeddings), False)
+        best_identities = np.array([""] * len(test_embeddings), dtype=object)
+        best_scores = np.full(len(test_embeddings), np.nan)
+    elif known_match_strategy == "prototype":
         known_mask, best_identities, best_scores = match_known_identities(
             test_embeddings,
             prototypes,
@@ -541,7 +558,7 @@ def run_species_experiment(
     assignment_type = np.array(["unknown"] * len(test_df), dtype=object)
     known_rows = test_df.loc[known_mask, ["dataset", "species"]].reset_index(drop=True)
     assignments[known_mask] = [
-        make_cluster_label(submission_identity_label(identity, row.dataset, row.species))
+        make_cluster_label(canonical_known_identity_label(identity, row.dataset, row.species))
         for identity, row in zip(best_identities[known_mask], known_rows.itertuples(index=False))
     ]
     assignment_type[known_mask] = "known_match"
@@ -599,7 +616,7 @@ def main() -> None:
         "coarse_cluster_threshold": 0.68,
         "coarse_min_cluster_size": 2,
         "coarse_top_k": 3,
-        "no_normalize": True
+        "no_normalize": False
     }
 
     output_path = Path(config["output"])
