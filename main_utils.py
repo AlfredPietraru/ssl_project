@@ -33,14 +33,17 @@ def download_dataset():
     return AnimalCLEF2026("data")
 
 
-def download_mega_descriptor_model_feature_extraction():
+def download_mega_descriptor_model_feature_extraction(eval = True):
     import timm
     try:
         m = timm.create_model("hf-hub:BVRA/MegaDescriptor-L-384", pretrained=True)
     except Exception:
         logger.exception("Model for embeddings failed downloading...")
         raise
-    m = m.eval()
+    if eval:
+        m = m.eval()
+    else:
+        m = m.train()
     return m
 
 def download_wildlife_pretraining():
