@@ -1,31 +1,20 @@
 import logging
-import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from main_utils import (
+    agglomerative_labels_from_similarity,
+    build_identity_prototypes,
+    evaluate_identity_prototypes,
+    load_embedding_artifacts,
+    normalize_rows,
+)
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TRAIN_EXPERIMENT")
-
-
-def load_test_experiment_module():
-    module_path = Path(__file__).with_name("02_test_experiment.py")
-    spec = importlib.util.spec_from_file_location("test_experiment_02", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load test experiment module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_test_experiment = load_test_experiment_module()
-build_identity_prototypes = _test_experiment.build_identity_prototypes
-evaluate_identity_prototypes = _test_experiment.evaluate_identity_prototypes
-load_embedding_artifacts = _test_experiment.load_embedding_artifacts
-normalize_rows = _test_experiment.normalize_rows
-agglomerative_labels_from_similarity = _test_experiment.agglomerative_labels_from_similarity
 
 
 def build_prototype_table(
