@@ -60,8 +60,8 @@ def main() -> None:
         "num_workers": 4,
         "max_train_samples": None,
         "max_eval_samples": None,
-        "projection_dim": 256,
-        "projection_hidden_dim": 512,
+        "projection_dim": 128,
+        "projection_hidden_dim": 256,
         "projection_dropout": 0.0,
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -75,13 +75,11 @@ def main() -> None:
     simclr_images, simclr_labels = build_one_simclr_batch(simclr_data)
     forward_output = model(simclr_images)
 
-    # logger.info("Device: %s", device)
-    # logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
-    # logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
-    # logger.info("Backbone embedding dimension: %s", model.embedding_dim)
-    # logger.info("Backbone embeddings shape: %s", tuple(embeddings.shape))
-    # logger.info("Projection shape: %s", tuple(projections.shape))
-    # logger.info("Forward output shape: %s", tuple(forward_output.shape))
+    logger.info("Device: %s", device)
+    logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
+    logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
+    logger.info("Backbone embedding dimension: %s", model.embedding_dim)
+    logger.info("Forward output shape: %s", tuple(forward_output.shape))
 
 
 if __name__ == "__main__":
