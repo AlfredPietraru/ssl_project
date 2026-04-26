@@ -19,7 +19,6 @@ class AnimalSimCLRDataset(Dataset):
         self,
         root: str | Path,
         split: str = "train",
-        image_size: int = 384,
         training: bool = True,
         max_samples: int | None = None,
         drop_unknown_identity: bool = True,
@@ -44,13 +43,13 @@ class AnimalSimCLRDataset(Dataset):
         if training:
             self.dataset.set_transform(T.Compose(
             [
-                T.Resize((image_size, image_size)),
+                T.Resize((384, 384)),
                 T.ToTensor(),
             ]))
         else:
             self.dataset.set_transform(T.Compose(
             [
-                T.Resize((image_size, image_size)),
+                T.Resize((384, 384)),
                 T.ToTensor(),
                 T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]
@@ -93,11 +92,11 @@ class AnimalSimCLRDataset(Dataset):
 
 
 class SimCLRGPUTransform(nn.Module):
-    def __init__(self, image_size: int = 384) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        kernel_size = max(3, int(0.1 * image_size) // 2 * 2 + 1)
+        kernel_size = max(3, int(0.1 * 384) // 2 * 2 + 1)
         self.augment = nn.Sequential(
-            K.RandomResizedCrop(size=(image_size, image_size), scale=(0.08, 1.0), p=1.0),
+            K.RandomResizedCrop(size=(384, 384), scale=(0.08, 1.0), p=1.0),
             K.RandomHorizontalFlip(p=0.5),
             K.ColorJitter(
                 brightness=0.80,
@@ -121,24 +120,19 @@ class SimCLRGPUTransform(nn.Module):
 
 def build_simclr_data(config: dict[str, object]) -> dict[str, object]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    image_size = int(config["image_size"])
     batch_size = int(config["batch_size"])
     num_workers = int(config["num_workers"])
 
     train_dataset = AnimalSimCLRDataset(
         root="data",
         split="train",
-        image_size=image_size,
         training=True,
-        max_samples=config.get("max_train_samples"),
         drop_unknown_identity=False
     )
     eval_dataset = AnimalSimCLRDataset(
         root="data",
         split="test",
-        image_size=image_size,
         training=False,
-        max_samples=config.get("max_eval_samples", config.get("max_train_samples")),
         drop_unknown_identity=False
     )
 
@@ -161,7 +155,7 @@ def build_simclr_data(config: dict[str, object]) -> dict[str, object]:
         persistent_workers=num_workers > 0,
     )
     
-    gpu_transform = SimCLRGPUTransform(image_size=image_size).to(device)
+    gpu_transform = SimCLRGPUTransform().to(device)
     gpu_transform = gpu_transform.eval()
 
     return {
@@ -188,45 +182,12 @@ def summarize_metadata(dataset: AnimalSimCLRDataset) -> dict[str, int]:
         "identities": int(metadata["identity"].nunique()),
     }
 
-def inspect_one_train_batch(
-    train_loader: DataLoader,
-    gpu_transform: SimCLRGPUTransform,
-    device: torch.device,
-) -> None:
-    start_time = time.perf_counter()
-    images, labels = next(iter(train_loader))
-    load_seconds = time.perf_counter() - start_time
-
-    start_time = time.perf_counter()
-    images = images.to(device, non_blocking=True)
-    labels = labels.to(device, non_blocking=True)
-    view_1 = gpu_transform(images)
-    view_2 = gpu_transform(images)
-    simclr_images = torch.cat([view_1, view_2], dim=0)
-    contrastive_labels = torch.cat([labels, labels], dim=0)
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    augment_seconds = time.perf_counter() - start_time
-
-    logger.info("One train batch CPU load time: %.3f seconds", load_seconds)
-    logger.info("One train batch GPU transfer+augment time: %.3f seconds", augment_seconds)
-    logger.info("raw images shape: %s", tuple(images.shape))
-    logger.info("view_1 shape: %s", tuple(view_1.shape))
-    logger.info("view_2 shape: %s", tuple(view_2.shape))
-    logger.info("labels shape: %s", tuple(labels.shape))
-    logger.info("SimCLR images shape after concat: %s", tuple(simclr_images.shape))
-    logger.info("SimCLR labels shape after concat: %s", tuple(contrastive_labels.shape))
-    logger.info("First batch labels: %s", labels.cpu().tolist())
-
 
 def main() -> None:
     config = {
         "root": "data",
-        "image_size": 384,
         "batch_size":  64,
-        "num_workers":  4,
-        "max_train_samples": None,
-        "max_eval_samples": None,
+        "num_workers":  4
     }
     simclr_data = build_simclr_data(config)
     device = simclr_data["device"]
@@ -236,14 +197,37 @@ def main() -> None:
     train_loader = simclr_data["train_loader"]
     eval_loader = simclr_data["eval_loader"]
 
+    logger.info("Device tyoe: %s", device)
     logger.info("Train loader batches: %s", len(train_loader))
     logger.info("Eval loader batches: %s", len(eval_loader))
     logger.info("Train metadata summary: %s", summarize_metadata(train_dataset))
     logger.info("Eval metadata summary: %s", summarize_metadata(eval_dataset))
-    
-    for i in range(10):
-        inspect_one_train_batch(train_loader, gpu_transform, device)
+    print()
+    for i in range(20): 
+        start_time = time.perf_counter()
+        images, labels = next(iter(train_loader))
+        load_seconds = time.perf_counter() - start_time
 
+        start_time = time.perf_counter()
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        view_1 = gpu_transform(images)
+        view_2 = gpu_transform(images)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        simclr_images = torch.cat([view_1, view_2], dim=0)
+        contrastive_labels = torch.cat([labels, labels], dim=0)
+        
+        augment_seconds = time.perf_counter() - start_time
+
+        logger.info("One train batch CPU load time: %.3f seconds", load_seconds)
+        logger.info("One train batch GPU transfer+augment time: %.3f seconds", augment_seconds)
+        logger.info("raw images shape: %s", tuple(images.shape))
+        logger.info("view_1 shape: %s", tuple(view_1.shape))
+        logger.info("view_2 shape: %s", tuple(view_2.shape))
+        logger.info("labels shape: %s", tuple(labels.shape))
+        logger.info("SimCLR images shape after concat: %s", tuple(simclr_images.shape))
+        logger.info("SimCLR labels shape after concat: %s", tuple(contrastive_labels.shape))
 
 if __name__ == "__main__":
     main()

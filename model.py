@@ -56,10 +56,8 @@ def main() -> None:
     config = {
         "root": "data",
         "image_size": 384,
-        "batch_size": 32,
-        "num_workers": 4,
-        "max_train_samples": None,
-        "max_eval_samples": None,
+        "batch_size": 4,
+        "num_workers": 1,
         "projection_dim": 128,
         "projection_hidden_dim": 256,
         "projection_dropout": 0.0,

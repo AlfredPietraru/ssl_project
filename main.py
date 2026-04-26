@@ -58,82 +58,47 @@ def synchronize_if_cuda(device: torch.device) -> None:
         torch.cuda.synchronize()
 
 
-def build_one_simclr_batch(
-    train_loader: DataLoader,
-    gpu_transform: SimCLRGPUTransform,
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    start_time = time.perf_counter()
-    images, labels = next(iter(train_loader))
-    load_seconds = time.perf_counter() - start_time
-
-    start_time = time.perf_counter()
-    images = images.to(device, non_blocking=True)
-    labels = labels.to(device, non_blocking=True)
-    view_1 = gpu_transform(images)
-    view_2 = gpu_transform(images)
-    simclr_images = torch.cat([view_1, view_2], dim=0)
-    simclr_labels = torch.cat([labels, labels], dim=0)
-    synchronize_if_cuda(device)
-    augment_seconds = time.perf_counter() - start_time
-
-    timings = {
-        "cpu_load_seconds": load_seconds,
-        "gpu_transfer_augment_seconds": augment_seconds,
-    }
-    return simclr_images, simclr_labels, timings
-
-
 def main() -> None:
     config = {
         "root": "data",
-        "image_size": 384,
-        "batch_size": 32,
-        "num_workers": 4,
-        "max_train_samples": None,
-        "max_eval_samples": None,
+        "batch_size": 8,
+        "num_workers": 1,
         "temperature": 0.5,
         "projection_dim": 256,
         "projection_hidden_dim": 512,
         "projection_dropout": 0.0,
-        "freeze_backbone": False,
     }
 
     simclr_data = build_simclr_data(config)
     device = simclr_data["device"]
     gpu_transform = simclr_data["gpu_transform"]
     train_loader = simclr_data["train_loader"]
+    eval_loader = simclr_data["eval_loader"]
 
     model = ContrastiveEmbeddingModel(
         projection_dim=int(config["projection_dim"]),
         projection_hidden_dim=int(config["projection_hidden_dim"]),
-        dropout=float(config["projection_dropout"]),
-        freeze_backbone=bool(config["freeze_backbone"]),
+        dropout=float(config["projection_dropout"])
     ).to(device)
     loss_fn = SupervisedContrastiveLoss(temperature=float(config["temperature"])).to(device)
-    for i in range(10):
-        simclr_images, simclr_labels, timings = build_one_simclr_batch(
-            train_loader=train_loader,
-            gpu_transform=gpu_transform,
-            device=device,
-        )
+    model.eval()
 
-        embeddings, projections = model(simclr_images)
-        loss = loss_fn(projections, simclr_labels)
 
-        logger.info("Device: %s", device)
-        logger.info("CPU batch load time: %.3f seconds", timings["cpu_load_seconds"])
-        logger.info(
-            "GPU transfer+augment time: %.3f seconds",
-            timings["gpu_transfer_augment_seconds"],
-        )
-        logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
-        logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
-        logger.info("Backbone embedding shape: %s", tuple(embeddings.shape))
-        logger.info("Projection shape: %s", tuple(projections.shape))
-        logger.info("Unique labels in concatenated batch: %s", int(simclr_labels.unique().numel()))
-        logger.info("Supervised contrastive loss: %.6f", float(loss.detach().cpu()))
-        print()
+    for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            view_1 = gpu_transform(images)
+            view_2 = gpu_transform(images)
+            simclr_images = torch.cat([view_1, view_2], dim=0)
+            simclr_labels = torch.cat([labels, labels], dim=0)
+            projections = model(simclr_images)
+            loss = loss_fn(projections, simclr_labels)
+
+            logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
+            logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
+            logger.info("Projection shape: %s", tuple(projections.shape))
+            logger.info("Unique labels in concatenated batch: %s", int(simclr_labels.unique().numel()))
+            logger.info("Supervised contrastive loss: %.6f", float(loss.detach().cpu()))
+            print()
 
 
 if __name__ == "__main__":
