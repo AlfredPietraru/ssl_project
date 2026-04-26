@@ -127,8 +127,8 @@ def main() -> None:
         "image_size": 384,
         "batch_size": 4,
         "num_workers": 1,
-        "projection_dim": 128,
-        "projection_hidden_dim": 256,
+        "projection_dim": 256,
+        "projection_hidden_dim": 512,
         "projection_dropout": 0.0,
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

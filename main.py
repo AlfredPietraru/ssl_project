@@ -90,7 +90,7 @@ def main(config : dict[str, any]) -> None:
         start_time = time.perf_counter()
 
         for batch_idx, (images, labels) in enumerate(train_loader, start=1):
-            if batch_idx == 100:
+            if batch_idx == 200:
                 break
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
@@ -117,9 +117,6 @@ def main(config : dict[str, any]) -> None:
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
             scaler.step(optimizer)
             scaler.update()
 
@@ -169,9 +166,9 @@ def main(config : dict[str, any]) -> None:
 if __name__ == "__main__":
     config = {
         "root": "data",
-        "batch_size": 8,
-        "num_workers": 1,
-        "epochs": 20,
+        "batch_size": 16,
+        "num_workers": 4,
+        "epochs": 3,
         "lr": 1e-5,
         "weight_decay": 1e-4,
         "temperature": 0.5,

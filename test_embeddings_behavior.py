@@ -2,32 +2,65 @@ import argparse
 import logging
 import os
 from pathlib import Path
+import torchvision.transforms as T
 
-# Keep matplotlib cache writable when running from restricted environments.
 os.environ.setdefault("MPLCONFIGDIR", str(Path("tmp/matplotlib").resolve()))
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-
-
-import matplotlib  # noqa: E402
+import torch
+import timm
+import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
+
+from sklearn.decomposition import PCA
+from torch.utils.data import DataLoader
+
+from wildlife_datasets.datasets import AnimalCLEF2026
 
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("EMBEDDINGS_TEST")
+logger = logging.getLogger("EMBEDDING_COMPARISON")
 
 
 def clean_string_array(values, missing_value: str = "unknown") -> np.ndarray:
     series = pd.Series(values, dtype="object")
     series = series.where(series.notna(), missing_value)
     series = series.astype(str).str.strip()
-    series = series.mask(series.eq("") | series.str.lower().isin({"nan", "none"}), missing_value)
+    series = series.mask(
+        series.eq("") | series.str.lower().isin({"nan", "none"}),
+        missing_value,
+    )
     return series.to_numpy(dtype=str)
+
+
+def build_dataset(root: str, split: str, max_samples: int | None):
+    transform = T.Compose([
+        T.Resize((384, 384)),
+        T.ToTensor(),
+        T.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        ),
+    ])
+
+    dataset = AnimalCLEF2026(
+        root,
+        transform=transform,
+        load_label=True,
+        factorize_label=True,
+        check_files=False,
+    )
+
+    dataset = dataset.get_subset(dataset.df["split"] == split)
+
+    if max_samples is not None:
+        dataset = dataset.get_subset(dataset.df.index[:max_samples])
+
+    return dataset
 
 
 def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -35,103 +68,165 @@ def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return values / np.maximum(norms, eps)
 
 
-def load_embedding_artifacts(
-    embeddings_dir: Path,
-    model_name: str,
-    split: str,
-    max_samples: int | None = None,
-    normalize: bool = False,
-) -> tuple[np.ndarray, pd.DataFrame]:
-    embeddings_path = embeddings_dir / f"{model_name}_{split}_embeddings.npy"
-    metadata_path = embeddings_dir / f"{model_name}_{split}_metadata.csv"
+def build_model_default(device: torch.device) -> torch.nn.Module:
+    logger.info("Loading default MegaDescriptor-L-384 from Hugging Face...")
+    model = timm.create_model(
+        "hf-hub:BVRA/MegaDescriptor-L-384",
+        pretrained=True,
+    )
+    model.eval()
+    model.to(device)
+    return model
 
-    if not embeddings_path.exists():
-        raise FileNotFoundError(
-            f"Could not find {embeddings_path}. Run 00_embedding_extraction.py first."
-        )
-    if not metadata_path.exists():
-        raise FileNotFoundError(
-            f"Could not find {metadata_path}. Run 00_embedding_extraction.py first."
-        )
 
-    embeddings = np.load(embeddings_path)
-    metadata = pd.read_csv(metadata_path)
+def build_model_finetuned(model_path: Path, device: torch.device) -> torch.nn.Module:
+    logger.info("Loading fine-tuned embedding model from %s", model_path)
 
-    if len(metadata) != len(embeddings):
-        raise ValueError(
-            f"{split} artifact row mismatch: {len(metadata)} metadata rows but "
-            f"{len(embeddings)} embeddings."
-        )
+    obj = torch.load(model_path, map_location=device)
 
-    if "embedding_index" in metadata.columns:
-        expected = np.arange(len(metadata))
-        actual = metadata["embedding_index"].to_numpy()
-        if not np.array_equal(actual, expected):
+    if isinstance(obj, torch.nn.Module):
+        model = obj
+        model.eval()
+        model.to(device)
+        return model
+
+    model = timm.create_model(
+        "hf-hub:BVRA/MegaDescriptor-L-384",
+        pretrained=False,
+    )
+
+    if isinstance(obj, dict) and "backbone_state_dict" in obj:
+        model.load_state_dict(obj["backbone_state_dict"])
+    elif isinstance(obj, dict) and "model_state_dict" in obj:
+        state_dict = obj["model_state_dict"]
+
+        backbone_state_dict = {
+            key.replace("backbone.", ""): value
+            for key, value in state_dict.items()
+            if key.startswith("backbone.")
+        }
+
+        if not backbone_state_dict:
             raise ValueError(
-                f"{metadata_path} has non-contiguous embedding_index values. "
-                "The CSV rows must align exactly with the .npy rows."
+                "Checkpoint has model_state_dict, but no keys starting with 'backbone.'."
             )
+
+        model.load_state_dict(backbone_state_dict)
+    elif isinstance(obj, dict):
+        model.load_state_dict(obj)
     else:
-        metadata.insert(0, "embedding_index", np.arange(len(metadata)))
+        raise ValueError(f"Unsupported checkpoint format: {type(obj)}")
 
-    if max_samples is not None:
-        max_samples = min(max_samples, len(metadata))
-        embeddings = embeddings[:max_samples]
-        metadata = metadata.iloc[:max_samples].reset_index(drop=True).copy()
+    model.eval()
+    model.to(device)
+    return model
 
+
+def extract_metadata(dataset) -> pd.DataFrame:
+    df = dataset.df.reset_index(drop=True).copy()
+
+    if "identity" in df.columns:
+        df["label_string"] = clean_string_array(df["identity"])
+    elif "label" in df.columns:
+        df["label_string"] = clean_string_array(df["label"])
+    else:
+        df["label_string"] = "unknown"
+
+    for candidate in ["species", "species_string", "category", "dataset"]:
+        if candidate in df.columns:
+            df["species_string"] = clean_string_array(df[candidate])
+            break
+    else:
+        df["species_string"] = "unknown"
+
+    df.insert(0, "embedding_index", np.arange(len(df)))
+    return df
+
+
+def extract_embeddings(
+    model: torch.nn.Module,
+    dataset,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
+) -> np.ndarray:
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+    )
+
+    all_embeddings = []
+
+    with torch.inference_mode(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+        for batch_idx, batch in enumerate(loader, start=1):
+            if isinstance(batch, dict):
+                images = batch["image"]
+            else:
+                images = batch[0]
+
+            images = images.to(device, non_blocking=True)
+
+            embeddings = model(images)
+
+            if isinstance(embeddings, tuple):
+                embeddings = embeddings[0]
+
+            all_embeddings.append(embeddings.detach().cpu().float().numpy())
+
+            if batch_idx % 20 == 0:
+                logger.info("Processed batch %d/%d", batch_idx, len(loader))
+
+    return np.concatenate(all_embeddings, axis=0)
+
+
+def run_pca(embeddings: np.ndarray, normalize: bool) -> tuple[np.ndarray, PCA]:
     if normalize:
         embeddings = normalize_rows(embeddings)
 
-    logger.info("Loaded %s embeddings from %s with shape %s", split, embeddings_path, embeddings.shape)
-    logger.info("Loaded %s metadata from %s", split, metadata_path)
-    return embeddings.astype(np.float32), metadata
+    pca = PCA(n_components=2, random_state=42)
+    pca_embeddings = pca.fit_transform(embeddings)
+
+    logger.info(
+        "PCA variance: PC1=%.4f, PC2=%.4f, total=%.4f",
+        pca.explained_variance_ratio_[0],
+        pca.explained_variance_ratio_[1],
+        pca.explained_variance_ratio_.sum(),
+    )
+
+    return pca_embeddings, pca
 
 
-def resolve_label_strings(metadata: pd.DataFrame) -> np.ndarray:
-    if "identity" in metadata.columns:
-        return clean_string_array(metadata["identity"])
-    if "label_string" in metadata.columns:
-        return clean_string_array(metadata["label_string"])
-    return np.array(["unknown"] * len(metadata), dtype=str)
-
-
-def resolve_species_strings(metadata: pd.DataFrame) -> np.ndarray:
-    for candidate in ("species", "species_string", "category", "dataset"):
-        if candidate in metadata.columns:
-            return clean_string_array(metadata[candidate])
-    return np.array(["unknown"] * len(metadata), dtype=str)
-
-
-def plot_embeddings(
+def plot_pca(
     pca_embeddings: np.ndarray,
-    labels: np.ndarray,
-    species: np.ndarray,
+    metadata: pd.DataFrame,
+    title: str,
     output_path: Path,
-    my_type : str
 ) -> None:
+    labels = clean_string_array(metadata["label_string"])
+    species = clean_string_array(metadata["species_string"])
+
     unique_labels, label_ids = np.unique(labels, return_inverse=True)
     unique_species, species_ids = np.unique(species, return_inverse=True)
 
     fig, ax = plt.subplots(figsize=(13, 10))
+
     scatter = ax.scatter(
         pca_embeddings[:, 0],
         pca_embeddings[:, 1],
         c=label_ids,
         cmap="tab20",
         s=24,
-        alpha=0.78,
+        alpha=0.75,
         edgecolors="none",
     )
 
-    ax.set_title(f"AnimalCLEF2026 {my_type} Embeddings Projected with PCA")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
-    ax.grid(alpha=0.2)
-
-    # Mark species centroids so the plot stays readable even with many identities.
     for species_id, species_name in enumerate(unique_species):
         mask = species_ids == species_id
         center = pca_embeddings[mask].mean(axis=0)
+
         ax.scatter(
             center[0],
             center[1],
@@ -140,237 +235,156 @@ def plot_embeddings(
             color="black",
             linewidths=0.8,
         )
-        ax.text(center[0], center[1], species_name, fontsize=10, ha="left", va="bottom")
+        ax.text(
+            center[0],
+            center[1],
+            species_name,
+            fontsize=10,
+            ha="left",
+            va="bottom",
+        )
 
-    # Only show a compact colorbar when the number of identities is reasonable.
     if len(unique_labels) <= 30:
         colorbar = fig.colorbar(scatter, ax=ax, shrink=0.8)
         colorbar.set_label("Identity index")
+
+    ax.set_title(title)
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.grid(alpha=0.2)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
-def compute_class_separation(
-    my_type: str,
-    csv_path: Path,
-    output_plot: Path,
-    separation_path: Path,
-) -> None:
-    if not csv_path.exists():
-        raise FileNotFoundError(
-            f"Could not find {csv_path}. Generate the PCA CSV first or point this function to an existing file."
-        )
-
-    df = pd.read_csv(csv_path)
-    class_column = "species_string" if "species_string" in df.columns else "species"
-    required_columns = {"pc1", "pc2", class_column}
-    missing_columns = required_columns - set(df.columns)
-    if missing_columns:
-        raise ValueError(f"CSV is missing required columns: {sorted(missing_columns)}")
-
-    plot_df = df.dropna(subset=["pc1", "pc2", class_column]).copy()
-    if plot_df.empty:
-        raise ValueError("No valid PCA rows with class labels were found in the CSV.")
-
-    plot_df[class_column] = clean_string_array(plot_df[class_column])
-    classes = sorted(plot_df[class_column].unique())
-    colors = plt.cm.tab10(np.linspace(0, 1, len(classes)))
-
-    fig, ax = plt.subplots(figsize=(12, 9))
-    class_centroids = {}
-    within_class_scatter = {}
-
-    for color, class_name in zip(colors, classes):
-        class_df = plot_df[plot_df[class_column] == class_name]
-        points = class_df[["pc1", "pc2"]].to_numpy()
-        centroid = points.mean(axis=0)
-        class_centroids[class_name] = centroid
-
-        distances = np.linalg.norm(points - centroid, axis=1)
-        within_class_scatter[class_name] = float(distances.mean())
-
-        ax.scatter(
-            points[:, 0],
-            points[:, 1],
-            label=f"{class_name} (n={len(points)})",
-            s=28,
-            alpha=0.72,
-            color=color,
-            edgecolors="none",
-        )
-        ax.scatter(
-            centroid[0],
-            centroid[1],
-            marker="X",
-            s=220,
-            color=color,
-            edgecolors="black",
-            linewidths=1.0,
-        )
-        ax.text(
-            centroid[0],
-            centroid[1],
-            f" {class_name}",
-            fontsize=11,
-            ha="left",
-            va="bottom",
-        )
-
-    ax.set_title(f"AnimalCLEF2026 {my_type} PCA Colored by Class")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
-    ax.grid(alpha=0.2)
-    ax.legend(loc="best")
-    fig.tight_layout()
-    fig.savefig(output_plot, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-    centroid_rows = []
-    class_names = list(class_centroids.keys())
-    for i, class_a in enumerate(class_names):
-        for class_b in class_names[i + 1:]:
-            distance = float(np.linalg.norm(class_centroids[class_a] - class_centroids[class_b]))
-            centroid_rows.append(
-                {"class_a": class_a, "class_b": class_b, "centroid_distance": distance}
-            )
-
-    separation_df = pd.DataFrame(
-        centroid_rows,
-        columns=["class_a", "class_b", "centroid_distance"],
-    ).sort_values("centroid_distance", ascending=False)
-    separation_df.to_csv(separation_path, index=False)
-
-    logger.info("Saved class-only PCA plot to %s", output_plot)
-    logger.info("Saved class centroid distances to %s", separation_path)
-    logger.info("Average within-class scatter: %s", within_class_scatter)
-    if not separation_df.empty:
-        logger.info("Centroid distances between classes:\n%s", separation_df.to_string(index=False))
-
-def save_projection_table(
-    metadata: pd.DataFrame,
+def save_pca_csv(
     pca_embeddings: np.ndarray,
-    labels: np.ndarray,
-    species: np.ndarray,
+    metadata: pd.DataFrame,
     output_path: Path,
 ) -> None:
     df = metadata.reset_index(drop=True).copy()
-    df["label_string"] = labels
-    df["species_string"] = species
     df["pc1"] = pca_embeddings[:, 0]
     df["pc2"] = pca_embeddings[:, 1]
     df.to_csv(output_path, index=False)
 
 
-def run_split(
-    my_type: str,
-    embeddings_dir: Path,
-    model_name: str,
-    max_samples: int | None,
+def process_model(
+    model_type: str,
+    model: torch.nn.Module,
+    dataset,
+    metadata: pd.DataFrame,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
     normalize: bool,
-    output_plot: Path,
-    output_csv: Path,
+    output_dir: Path,
+    split: str,
 ) -> None:
-    output_plot.parent.mkdir(parents=True, exist_ok=True)
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Extracting embeddings for model: %s", model_type)
 
-    embeddings, metadata = load_embedding_artifacts(
-        embeddings_dir=embeddings_dir,
-        model_name=model_name,
-        split=my_type,
-        max_samples=max_samples,
-        normalize=normalize,
-    )
-    labels = resolve_label_strings(metadata)
-    species = resolve_species_strings(metadata)
-    logger.info("Loaded %s %s samples", len(metadata), my_type)
-    logger.info(
-        "Found %s unique identities and %s unique species groups",
-        len(np.unique(labels)),
-        len(np.unique(species)),
-    )
-    logger.info("Embedding matrix shape: %s", embeddings.shape)
-
-    pca = PCA(n_components=2, random_state=42)
-    pca_embeddings = pca.fit_transform(embeddings)
-    logger.info(
-        "Explained variance ratio: PC1=%.4f, PC2=%.4f, total=%.4f",
-        pca.explained_variance_ratio_[0],
-        pca.explained_variance_ratio_[1],
-        pca.explained_variance_ratio_.sum(),
+    embeddings = extract_embeddings(
+        model=model,
+        dataset=dataset,
+        device=device,
+        batch_size=batch_size,
+        num_workers=num_workers,
     )
 
-    plot_embeddings(pca_embeddings, labels, species, output_plot, my_type)
-    save_projection_table(metadata, pca_embeddings, labels, species, output_csv)
+    logger.info("%s embeddings shape: %s", model_type, embeddings.shape)
 
-    logger.info("Saved PCA plot to %s", output_plot)
-    logger.info("Saved PCA coordinates to %s", output_csv)
+    np.save(output_dir / f"{model_type}_{split}_embeddings.npy", embeddings)
+
+    pca_embeddings, _ = run_pca(embeddings, normalize=normalize)
+
+    plot_pca(
+        pca_embeddings=pca_embeddings,
+        metadata=metadata,
+        title=f"AnimalCLEF2026 {split} PCA - {model_type}",
+        output_path=output_dir / f"{model_type}_{split}_pca.png",
+    )
+
+    save_pca_csv(
+        pca_embeddings=pca_embeddings,
+        metadata=metadata,
+        output_path=output_dir / f"{model_type}_{split}_pca.csv",
+    )
+
+    logger.info("Saved outputs for model: %s", model_type)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualize precomputed AnimalCLEF2026 embeddings from data_embeddings with PCA."
+        description="Compare default MegaDescriptor and fine-tuned MegaDescriptor embeddings with PCA."
     )
+
+    parser.add_argument("--root", default="data")
+    parser.add_argument("--split", default="test", choices=["train", "test"])
+    parser.add_argument("--finetuned-model-path", default="artifacts/embedding_checkpoints/embedding_backbone.pt", required=True)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--normalize", action="store_true")
     parser.add_argument(
-        "--embeddings-dir",
-        default="data_embeddings",
-        help="Directory containing row-aligned .npy embeddings and metadata CSV artifacts.",
+        "--output-dir",
+        default="artifacts/embedding_comparison",
     )
-    parser.add_argument(
-        "--model-name",
-        default="mega",
-        help="Prefix used in artifact filenames, e.g. mega_train_embeddings.npy.",
-    )
-    parser.add_argument(
-        "--split",
-        choices=("train", "test", "both"),
-        default="both",
-        help="Dataset split to process.",
-    )
-    parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=None,
-        help="Optional row limit for quick experiments on each selected split.",
-    )
-    parser.add_argument(
-        "--normalize",
-        action="store_true",
-        help="L2-normalize loaded embeddings before PCA.",
-    )
-    parser.add_argument(
-        "--output-plot",
-        default=None,
-        help="Path to the saved PCA scatter plot. Only valid when --split is train or test.",
-    )
-    parser.add_argument(
-        "--output-csv",
-        default=None,
-        help="Path to the saved table with PCA coordinates. Only valid when --split is train or test.",
-    )
+
     args = parser.parse_args()
 
-    embeddings_dir = Path(args.embeddings_dir)
-    if not embeddings_dir.exists():
-        raise FileNotFoundError(f"Embeddings directory '{embeddings_dir}' does not exist.")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    selected_splits = ("train", "test") if args.split == "both" else (args.split,)
-    if len(selected_splits) > 1 and (args.output_plot or args.output_csv):
-        raise ValueError("--output-plot and --output-csv can only be used with a single split.")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Using device: %s", device)
 
-    for split in selected_splits:
-        output_plot = Path(args.output_plot or f"artifacts/animalclef2026_{split}_pca.png")
-        output_csv = Path(args.output_csv or f"artifacts/animalclef2026_{split}_pca.csv")
-        run_split(
-            split,
-            embeddings_dir,
-            args.model_name,
-            args.max_samples,
-            args.normalize,
-            output_plot,
-            output_csv,
-        )
+    if device.type == "cuda":
+        logger.info("GPU: %s", torch.cuda.get_device_name(0))
+
+    dataset = build_dataset(
+        root=args.root,
+        split=args.split,
+        max_samples=args.max_samples,
+    )
+    metadata = extract_metadata(dataset)
+
+    logger.info("Loaded %d samples from split=%s", len(dataset), args.split)
+
+    default_model = build_model_default(device)
+    process_model(
+        model_type="default_mega",
+        model=default_model,
+        dataset=dataset,
+        metadata=metadata,
+        device=device,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        normalize=args.normalize,
+        output_dir=output_dir,
+        split=args.split,
+    )
+
+    del default_model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    finetuned_model = build_model_finetuned(
+        model_path=Path(args.finetuned_model_path),
+        device=device,
+    )
+    process_model(
+        model_type="finetuned_mega",
+        model=finetuned_model,
+        dataset=dataset,
+        metadata=metadata,
+        device=device,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        normalize=args.normalize,
+        output_dir=output_dir,
+        split=args.split,
+    )
+
 
 if __name__ == "__main__":
     main()
