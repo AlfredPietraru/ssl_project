@@ -10,10 +10,30 @@ load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
 import kagglehub
 from kagglehub.config import get_kaggle_credentials
 from kagglehub.exceptions import KaggleApiHTTPError
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MAIN")
+
+
+def plot_loss(train_losses, save_name="simclr_loss.png"):
+    artifacts_dir = Path("artifacts")
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = artifacts_dir / save_name
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(train_losses, label="Train loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Supervised contrastive loss")
+    plt.title("SimCLR training loss")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
 
 
 def _log_kaggle_auth_state() -> None:
@@ -62,27 +82,6 @@ def download_dataset():
     logger.info("Dataset downloaded and moved to `data`.")
     return AnimalCLEF2026("data")
 
-
-def download_mega_descriptor_model_feature_extraction(eval = True):
-    import timm
-    try:
-        m = timm.create_model("hf-hub:BVRA/MegaDescriptor-L-384", pretrained=True)
-    except Exception:
-        logger.exception("Model for embeddings failed downloading...")
-        raise
-    if eval:
-        m = m.eval()
-    else:
-        m = m.train()
-    return m
-
-def download_wildlife_pretraining():
-    try:
-        path = kagglehub.dataset_download("wildlifedatasets/wildlifereid-10k")
-        shutil.move(path, "pretrained_data")
-    except Exception:
-        logger.exception("Failed downloading other moving dataset to the right path")
-    
 
 if __name__ == "__main__":
     dataset = download_dataset()

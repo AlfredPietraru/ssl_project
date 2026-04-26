@@ -9,3 +9,4 @@ features
 artifacts
 tmp
 data_embeddings
+venv

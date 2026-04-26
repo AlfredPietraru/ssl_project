@@ -9,12 +9,14 @@ from torch.utils.data import DataLoader
 
 from animal_dataset import SimCLRGPUTransform, build_simclr_data
 from model import ContrastiveEmbeddingModel
+from main_utils import (
+    plot_loss
+)
 
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SIMCLR")
-
 
 class SupervisedContrastiveLoss(nn.Module):
     def __init__(self, temperature: float = 0.07) -> None:
@@ -53,53 +55,129 @@ class SupervisedContrastiveLoss(nn.Module):
         return -positive_log_prob[valid_anchor_mask].mean()
 
 
-def synchronize_if_cuda(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-
-def main() -> None:
-    config = {
-        "root": "data",
-        "batch_size": 8,
-        "num_workers": 1,
-        "temperature": 0.5,
-        "projection_dim": 256,
-        "projection_hidden_dim": 512,
-        "projection_dropout": 0.0,
-    }
-
+def main(config : dict[str, any]) -> None:
     simclr_data = build_simclr_data(config)
     device = simclr_data["device"]
     gpu_transform = simclr_data["gpu_transform"]
     train_loader = simclr_data["train_loader"]
-    eval_loader = simclr_data["eval_loader"]
 
     model = ContrastiveEmbeddingModel(
         projection_dim=int(config["projection_dim"]),
         projection_hidden_dim=int(config["projection_hidden_dim"]),
-        dropout=float(config["projection_dropout"])
+        dropout=float(config["projection_dropout"]),
     ).to(device)
-    loss_fn = SupervisedContrastiveLoss(temperature=float(config["temperature"])).to(device)
-    model.eval()
 
+    loss_fn = SupervisedContrastiveLoss(
+        temperature=float(config["temperature"])
+    ).to(device)
 
-    for images, labels in train_loader:
-            images, labels = images.to(device), labels.to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(config["lr"]),
+        weight_decay=float(config["weight_decay"]),
+    )
+
+    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
+
+    train_losses = []
+    best_loss = float("inf")
+
+    for epoch in range(1, int(config["epochs"]) + 1):
+        model.train()
+
+        epoch_loss = 0.0
+        valid_batches = 0
+        start_time = time.perf_counter()
+
+        for batch_idx, (images, labels) in enumerate(train_loader, start=1):
+            if batch_idx == 100:
+                break
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+
             view_1 = gpu_transform(images)
             view_2 = gpu_transform(images)
+
             simclr_images = torch.cat([view_1, view_2], dim=0)
             simclr_labels = torch.cat([labels, labels], dim=0)
-            projections = model(simclr_images)
-            loss = loss_fn(projections, simclr_labels)
 
-            logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
-            logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
-            logger.info("Projection shape: %s", tuple(projections.shape))
-            logger.info("Unique labels in concatenated batch: %s", int(simclr_labels.unique().numel()))
-            logger.info("Supervised contrastive loss: %.6f", float(loss.detach().cpu()))
-            print()
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
+                projections = model(simclr_images)
+
+                if isinstance(projections, tuple):
+                    projections = projections[-1]
+
+                loss = loss_fn(projections, simclr_labels)
+
+            if not torch.isfinite(loss):
+                logger.warning("Skipping non-finite loss at batch %d: %s", batch_idx, loss.item())
+                continue
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            scaler.step(optimizer)
+            scaler.update()
+
+            epoch_loss += float(loss.detach().cpu())
+            valid_batches += 1
+
+            if batch_idx % 20 == 0:
+                logger.info(
+                    "Epoch %d | Batch %d/%d | Loss %.6f",
+                    epoch,
+                    batch_idx,
+                    len(train_loader),
+                    float(loss.detach().cpu()),
+                )
+
+        avg_loss = epoch_loss / max(valid_batches, 1)
+        train_losses.append(avg_loss)
+
+        elapsed = time.perf_counter() - start_time
+
+        logger.info(
+            "Epoch %d/%d finished | avg_loss=%.6f | time=%.1fs",
+            epoch,
+            config["epochs"],
+            avg_loss,
+            elapsed,
+        )
+
+        plot_loss(train_losses, save_name="simclr_loss.png")
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            model.save_full_checkpoint(
+                checkpoint_data={
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
+                    "loss": avg_loss,
+                    "config": config,
+                }
+            )
+            model.save_embedding_checkpoint()
+            logger.info("Saved new best checkpoint with loss %.6f", best_loss)
 
 
 if __name__ == "__main__":
-    main()
+    config = {
+        "root": "data",
+        "batch_size": 8,
+        "num_workers": 1,
+        "epochs": 20,
+        "lr": 1e-5,
+        "weight_decay": 1e-4,
+        "temperature": 0.5,
+        "projection_dim": 256,
+        "projection_hidden_dim": 512,
+        "projection_dropout": 0.0,
+        "checkpoint_dir": "checkpoints_simclr",
+    }
+    main(config)
