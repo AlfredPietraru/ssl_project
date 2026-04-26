@@ -4,3 +4,4 @@ pip3 install kagglehub torch matplotlib torchvision dotenv timm wildlife-dataset
 pip3 install wildlife-datasets git+https://github.com/WildlifeDatasets/wildlife-tools --quiet --upgrade-strategy only-if-needed
 git config user.email alfred.andrei@yahoo.com
 git config user.name AlfredPietraru
+python3 main_utils.py
