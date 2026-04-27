@@ -11,8 +11,6 @@ from wildlife_datasets.datasets import AnimalCLEF2026
 import logging
 import time
 import warnings
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
 
 class AnimalSimCLRDataset(Dataset):
     def __init__(
@@ -29,7 +27,10 @@ class AnimalSimCLRDataset(Dataset):
 
         self.dataset = AnimalCLEF2026(
             str(self.root),
-            transform=None,
+            transform=T.Compose([
+                T.Resize((384, 384)),
+                T.ToTensor()
+            ]),
             load_label=True,
             factorize_label=True,
             check_files=False,
@@ -40,21 +41,6 @@ class AnimalSimCLRDataset(Dataset):
             drop_unknown_identity=drop_unknown_identity,
         )
         self.dataset = self.dataset.get_subset(self.metadata["_source_index"].tolist())
-        if training:
-            self.dataset.set_transform(T.Compose(
-            [
-                T.Resize((384, 384)),
-                T.ToTensor(),
-            ]))
-        else:
-            self.dataset.set_transform(T.Compose(
-            [
-                T.Resize((384, 384)),
-                T.ToTensor(),
-                T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
-            ))
-        
 
         identities = sorted(self.metadata["identity"].astype(str).unique())
         self.identity_to_label = {
@@ -96,12 +82,10 @@ class SimCLRGPUTransform(nn.Module):
         super().__init__()
         kernel_size = max(3, int(0.1 * 384) // 2 * 2 + 1)
         self.augment = nn.Sequential(
-            K.RandomResizedCrop(size=(384, 384), scale=(0.08, 1.0), p=1.0),
-            K.RandomHorizontalFlip(p=0.5),
             K.ColorJitter(
-                brightness=0.80,
-                contrast=0.80,
-                saturation=0.80,
+                brightness=0.25,
+                contrast=0.25,
+                saturation=0.25,
                 hue=0.20,
                 p=0.8,
             ),
@@ -111,7 +95,7 @@ class SimCLRGPUTransform(nn.Module):
                 sigma=(0.1, 2.0),
                 p=0.5,
             ),
-            K.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+            K.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
         )
         
     def forward(self, images: torch.Tensor) -> torch.Tensor:

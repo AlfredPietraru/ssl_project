@@ -292,9 +292,6 @@ def process_model(
     )
 
     logger.info("%s embeddings shape: %s", model_type, embeddings.shape)
-
-    np.save(output_dir / f"{model_type}_{split}_embeddings.npy", embeddings)
-
     pca_embeddings, _ = run_pca(embeddings, normalize=normalize)
 
     plot_pca(
@@ -304,11 +301,11 @@ def process_model(
         output_path=output_dir / f"{model_type}_{split}_pca.png",
     )
 
-    save_pca_csv(
-        pca_embeddings=pca_embeddings,
-        metadata=metadata,
-        output_path=output_dir / f"{model_type}_{split}_pca.csv",
-    )
+    # save_pca_csv(
+    #     pca_embeddings=pca_embeddings,
+    #     metadata=metadata,
+    #     output_path=output_dir / f"{model_type}_{split}_pca.csv",
+    # )
 
     logger.info("Saved outputs for model: %s", model_type)
 
@@ -320,7 +317,7 @@ def main() -> None:
 
     parser.add_argument("--root", default="data")
     parser.add_argument("--split", default="test", choices=["train", "test"])
-    parser.add_argument("--finetuned-model-path", default="artifacts/embedding_checkpoints/embedding_backbone.pt", required=True)
+    parser.add_argument("--finetuned-model-path", default="artifacts/embedding_checkpoints/embedding_backbone.pt")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--max-samples", type=int, default=None)
