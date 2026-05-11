@@ -18,8 +18,8 @@ def refine_with_incremental_enrollment(cfg: CFG) -> None:
     output_dir = Path(cfg.refinement_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    gallery_proto_embeddings = np.load(gallery_dir / "gallery_prototypes_embeddings.npy")
-    gallery_proto_metadata = pd.read_csv(gallery_dir / "gallery_prototypes_metadata.csv")
+    gallery_proto_embeddings = np.load(gallery_dir / "full_gallery_prototypes_embeddings.npy")
+    gallery_proto_metadata = pd.read_csv(gallery_dir / "full_gallery_prototypes_metadata.csv")
     known_matches = pd.read_csv(rejection_dir / "known_matches.csv")
     cluster_assignments = pd.read_csv(clustering_dir / "unknown_cluster_assignments.csv")
     cluster_proto_embeddings = np.load(clustering_dir / "unknown_cluster_prototypes_embeddings.npy")

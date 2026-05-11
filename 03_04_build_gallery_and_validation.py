@@ -176,6 +176,13 @@ def build_gallery_and_validation(
     embeddings, metadata = load_train_embeddings(embeddings_dir)
     embeddings, metadata = filter_known_training_identities(embeddings, metadata)
 
+    full_gallery_embeddings, full_gallery_metadata = build_identity_gallery(
+        embeddings=embeddings,
+        metadata=metadata,
+    )
+    save_split("full_gallery_prototypes", full_gallery_embeddings, full_gallery_metadata, output_dir)
+    save_split("full_gallery_images", embeddings, metadata, output_dir)
+
     known_train_ids, known_val_ids, unseen_val_ids = split_identities_for_open_set_validation(
         metadata=metadata,
         known_val_ratio=cfg.known_val_ratio,
@@ -214,6 +221,8 @@ def build_gallery_and_validation(
         "known_val_ratio": cfg.known_val_ratio,
         "unseen_val_ratio": cfg.unseen_val_ratio,
         "train_samples_total": int(len(metadata)),
+        "full_gallery_image_samples": int(len(metadata)),
+        "full_gallery_identity_count": int(full_gallery_metadata["identity"].nunique()),
         "gallery_image_samples": int(len(known_train_metadata)),
         "gallery_identity_count": int(gallery_metadata["identity"].nunique()),
         "known_val_samples": int(len(known_val_metadata)),

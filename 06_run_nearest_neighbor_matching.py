@@ -48,8 +48,8 @@ def run_matching(cfg: CFG) -> None:
     output_dir = Path(cfg.matching_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    gallery_prototypes, gallery_proto_meta = load_split(gallery_dir, "gallery_prototypes")
-    gallery_images, gallery_image_meta = load_split(gallery_dir, "gallery_images")
+    gallery_prototypes, gallery_proto_meta = load_split(gallery_dir, "full_gallery_prototypes")
+    gallery_images, gallery_image_meta = load_split(gallery_dir, "full_gallery_images")
     test_embeddings, test_metadata = load_split(embeddings_dir, "test")
 
     rows: list[dict[str, object]] = []

@@ -40,6 +40,9 @@ def extract_split_embeddings(
                 logger.info("Processed batch %d/%d", batch_idx, len(loader))
 
     if not all_embeddings:
+        logger.error(
+            "No embeddings were extracted. The dataloader is empty and split extraction would fail."
+        )
         raise ValueError("No embeddings were extracted because the dataloader is empty.")
 
     embeddings_array = np.concatenate(all_embeddings, axis=0)
