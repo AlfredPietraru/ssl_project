@@ -10,23 +10,37 @@ from torch.utils.data import DataLoader, Dataset
 from wildlife_datasets.datasets import AnimalCLEF2026
 import logging
 import time
+from config import CFG
 import warnings
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+training_transform = T.Compose([
+                T.Resize((384, 384)),
+                T.ToTensor(),
+])
+
+
+testing_transform = T.Compose([
+                T.Resize((384, 384)),
+                T.ToTensor(),
+                T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+]) 
+
 
 class AnimalSimCLRDataset(Dataset):
     def __init__(
         self,
         root: str | Path,
         split: str = "train",
-        training: bool = True,
         max_samples: int | None = None,
         drop_unknown_identity: bool = True,
+        transform = None
     ) -> None:
         self.root = Path(root)
         if not self.root.exists():
             raise FileNotFoundError(f"Dataset root '{self.root}' does not exist.")
-
+        
+        self.split  = split
         self.dataset = AnimalCLEF2026(
             str(self.root),
             transform=None,
@@ -40,22 +54,7 @@ class AnimalSimCLRDataset(Dataset):
             drop_unknown_identity=drop_unknown_identity,
         )
         self.dataset = self.dataset.get_subset(self.metadata["_source_index"].tolist())
-        if training:
-            self.dataset.set_transform(T.Compose(
-            [
-                T.Resize((384, 384)),
-                T.ToTensor(),
-            ]))
-        else:
-            self.dataset.set_transform(T.Compose(
-            [
-                T.Resize((384, 384)),
-                T.ToTensor(),
-                T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
-            ))
-        
-
+        self.dataset.set_transform(transform)
         identities = sorted(self.metadata["identity"].astype(str).unique())
         self.identity_to_label = {
             identity: label for label, identity in enumerate(identities)
@@ -116,31 +115,43 @@ class SimCLRGPUTransform(nn.Module):
         
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.augment(images)
+    
 
+def build_transformations(config : CFG):
+    transformations = SimCLRGPUTransform()
+    transformations = transformations.to(config.device)
+    transformations = transformations.eval()
+    return transformations
 
-def build_simclr_data(config: dict[str, object]) -> dict[str, object]:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = int(config["batch_size"])
-    num_workers = int(config["num_workers"])
+def build_simclr_data(
+        config : CFG, 
+        shuffle_training : bool = True, 
+        training_transform = None,
+        testing_transform = None
+    ) -> tuple[AnimalSimCLRDataset, AnimalSimCLRDataset, DataLoader, DataLoader]:
+    batch_size = config.batch_size
+    num_workers = config.num_workers
 
     train_dataset = AnimalSimCLRDataset(
-        root="data",
+        root=config.root,
         split="train",
-        training=True,
-        drop_unknown_identity=False
+        max_samples=config.max_samples,
+        drop_unknown_identity=False,
+        transform=training_transform,
     )
     eval_dataset = AnimalSimCLRDataset(
-        root="data",
+        root=config.root,
         split="test",
-        training=False,
-        drop_unknown_identity=False
+        max_samples=config.max_samples,
+        drop_unknown_identity=False,
+        transform=testing_transform
     )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
+        shuffle=shuffle_training,
+        drop_last=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=num_workers > 0,
@@ -154,23 +165,12 @@ def build_simclr_data(config: dict[str, object]) -> dict[str, object]:
         pin_memory=torch.cuda.is_available(),
         persistent_workers=num_workers > 0,
     )
-    
-    gpu_transform = SimCLRGPUTransform().to(device)
-    gpu_transform = gpu_transform.eval()
-
-    return {
-        "device": device,
-        "gpu_transform": gpu_transform,
-        "train_dataset": train_dataset,
-        "eval_dataset": eval_dataset,
-        "train_loader": train_loader,
-        "eval_loader": eval_loader,
-    }
+    return train_dataset, eval_dataset, train_loader, eval_loader  
 
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("SIMCLR")
+logger = logging.getLogger("animal_dataset")
 
 
 def summarize_metadata(dataset: AnimalSimCLRDataset) -> dict[str, int]:
@@ -184,18 +184,10 @@ def summarize_metadata(dataset: AnimalSimCLRDataset) -> dict[str, int]:
 
 
 def main() -> None:
-    config = {
-        "root": "data",
-        "batch_size":  64,
-        "num_workers":  4
-    }
-    simclr_data = build_simclr_data(config)
-    device = simclr_data["device"]
-    gpu_transform = simclr_data["gpu_transform"]
-    train_dataset = simclr_data["train_dataset"]
-    eval_dataset = simclr_data["eval_dataset"]
-    train_loader = simclr_data["train_loader"]
-    eval_loader = simclr_data["eval_loader"]
+    cfg = CFG("config.yaml")
+    train_dataset, eval_dataset, train_loader, eval_loader  = build_simclr_data(cfg)
+    device = cfg.device
+    gpu_transform = build_transformations(cfg)
 
     logger.info("Device tyoe: %s", device)
     logger.info("Train loader batches: %s", len(train_loader))
