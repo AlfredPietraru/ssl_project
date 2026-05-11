@@ -23,6 +23,24 @@ class CFG:
     embeddings_output_dir: str = "artifacts/embeddings"
     max_samples: int | None = None
     normalize_embeddings: bool = True
+    gallery_validation_output_dir: str = "artifacts/gallery_validation"
+    validation_random_seed: int = 42
+    known_val_ratio: float = 0.20
+    unseen_val_ratio: float = 0.20
+    thresholds_output_dir: str = "artifacts/thresholds"
+    threshold_search_steps: int = 200
+    matching_output_dir: str = "artifacts/matching"
+    matching_top_k: int = 5
+    rejection_output_dir: str = "artifacts/rejection"
+    clustering_output_dir: str = "artifacts/clustering"
+    clustering_similarity_threshold: float = 0.80
+    clustering_min_cluster_size: int = 1
+    refinement_output_dir: str = "artifacts/refinement"
+    refinement_min_cluster_size: int = 2
+    refinement_min_cluster_similarity: float = 0.85
+    refinement_known_confidence_threshold: float = 0.90
+    final_output_dir: str = "artifacts/final"
+    final_assignments_filename: str = "final_assignments.csv"
 
     def __init__(self, config_path: str | Path = "config.yaml") -> None:
         data = self._load_yaml_mapping(config_path)
@@ -43,6 +61,24 @@ class CFG:
         raw_max_samples = data["max_samples"]
         self.max_samples = None if raw_max_samples is None else int(raw_max_samples)  # type: ignore[arg-type]
         self.normalize_embeddings = bool(data["normalize_embeddings"])
+        self.gallery_validation_output_dir = str(data["gallery_validation_output_dir"])
+        self.validation_random_seed = int(data["validation_random_seed"])  # type: ignore[arg-type]
+        self.known_val_ratio = float(data["known_val_ratio"])  # type: ignore[arg-type]
+        self.unseen_val_ratio = float(data["unseen_val_ratio"])  # type: ignore[arg-type]
+        self.thresholds_output_dir = str(data["thresholds_output_dir"])
+        self.threshold_search_steps = int(data["threshold_search_steps"])  # type: ignore[arg-type]
+        self.matching_output_dir = str(data["matching_output_dir"])
+        self.matching_top_k = int(data["matching_top_k"])  # type: ignore[arg-type]
+        self.rejection_output_dir = str(data["rejection_output_dir"])
+        self.clustering_output_dir = str(data["clustering_output_dir"])
+        self.clustering_similarity_threshold = float(data["clustering_similarity_threshold"])  # type: ignore[arg-type]
+        self.clustering_min_cluster_size = int(data["clustering_min_cluster_size"])  # type: ignore[arg-type]
+        self.refinement_output_dir = str(data["refinement_output_dir"])
+        self.refinement_min_cluster_size = int(data["refinement_min_cluster_size"])  # type: ignore[arg-type]
+        self.refinement_min_cluster_similarity = float(data["refinement_min_cluster_similarity"])  # type: ignore[arg-type]
+        self.refinement_known_confidence_threshold = float(data["refinement_known_confidence_threshold"])  # type: ignore[arg-type]
+        self.final_output_dir = str(data["final_output_dir"])
+        self.final_assignments_filename = str(data["final_assignments_filename"])
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -62,6 +98,24 @@ class CFG:
             "embeddings_output_dir": self.embeddings_output_dir,
             "max_samples": self.max_samples,
             "normalize_embeddings": self.normalize_embeddings,
+            "gallery_validation_output_dir": self.gallery_validation_output_dir,
+            "validation_random_seed": self.validation_random_seed,
+            "known_val_ratio": self.known_val_ratio,
+            "unseen_val_ratio": self.unseen_val_ratio,
+            "thresholds_output_dir": self.thresholds_output_dir,
+            "threshold_search_steps": self.threshold_search_steps,
+            "matching_output_dir": self.matching_output_dir,
+            "matching_top_k": self.matching_top_k,
+            "rejection_output_dir": self.rejection_output_dir,
+            "clustering_output_dir": self.clustering_output_dir,
+            "clustering_similarity_threshold": self.clustering_similarity_threshold,
+            "clustering_min_cluster_size": self.clustering_min_cluster_size,
+            "refinement_output_dir": self.refinement_output_dir,
+            "refinement_min_cluster_size": self.refinement_min_cluster_size,
+            "refinement_min_cluster_similarity": self.refinement_min_cluster_similarity,
+            "refinement_known_confidence_threshold": self.refinement_known_confidence_threshold,
+            "final_output_dir": self.final_output_dir,
+            "final_assignments_filename": self.final_assignments_filename,
         }
 
     @staticmethod
@@ -96,6 +150,24 @@ class CFG:
             "embeddings_output_dir",
             "max_samples",
             "normalize_embeddings",
+            "gallery_validation_output_dir",
+            "validation_random_seed",
+            "known_val_ratio",
+            "unseen_val_ratio",
+            "thresholds_output_dir",
+            "threshold_search_steps",
+            "matching_output_dir",
+            "matching_top_k",
+            "rejection_output_dir",
+            "clustering_output_dir",
+            "clustering_similarity_threshold",
+            "clustering_min_cluster_size",
+            "refinement_output_dir",
+            "refinement_min_cluster_size",
+            "refinement_min_cluster_similarity",
+            "refinement_known_confidence_threshold",
+            "final_output_dir",
+            "final_assignments_filename",
         }
         missing_fields = sorted(required_fields - set(data))
         if missing_fields:

@@ -370,6 +370,19 @@ The main missing production pieces are:
 6. a final inference script that combines matching + rejection + clustering
 7. an optional adaptation loop with pseudo-labels
 
+Current pipeline files in this repository:
+
+1. `main.py`
+2. `02_extract_embeddings.py`
+3. `03_04_build_gallery_and_validation.py`
+4. step 4 is implemented together with step 3 in `03_04_build_gallery_and_validation.py`
+5. `05_calibrate_rejection_thresholds.py`
+6. `06_run_nearest_neighbor_matching.py`
+7. `07_reject_low_confidence_matches.py`
+8. `08_cluster_rejected_unknowns.py`
+9. `09_refine_with_incremental_enrollment.py`
+10. `10_export_final_assignments.py`
+
 ## 9. Recommended implementation order in this project
 
 Build the system in this order:

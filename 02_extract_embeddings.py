@@ -1,4 +1,3 @@
-import argparse
 import logging
 from pathlib import Path
 
@@ -106,15 +105,5 @@ def extract_embeddings_model(cfg : CFG) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Extract normalized backbone embeddings for train and test splits using a YAML config file."
-    )
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to the YAML configuration file.",
-    )
-    args = parser.parse_args()
-
-    cfg = CFG(args.config)
+    cfg = CFG("config.yaml")
     extract_embeddings_model(cfg)

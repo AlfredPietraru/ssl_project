@@ -1,4 +1,3 @@
-import argparse
 import logging
 import time
 import warnings
@@ -17,7 +16,8 @@ from config import CFG
 from model import ContrastiveEmbeddingModel
 from loss_functions import SupervisedContrastiveLoss
 from main_utils import (
-    plot_loss
+    plot_loss,
+    set_seed
 )
 
 
@@ -177,16 +177,6 @@ def main(config: CFG) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Train the contrastive embedding model using a YAML config file."
-    )
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to the YAML configuration file.",
-    )
-    args = parser.parse_args()
-
-    config = CFG(args.config)
+    config = CFG("config.yaml")
+    set_seed()
     main(config)
-

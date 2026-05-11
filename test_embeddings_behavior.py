@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from torch.utils.data import DataLoader
 
+from main_utils import normalize_rows
 from wildlife_datasets.datasets import AnimalCLEF2026
 
 
@@ -61,12 +62,6 @@ def build_dataset(root: str, split: str, max_samples: int | None):
         dataset = dataset.get_subset(dataset.df.index[:max_samples])
 
     return dataset
-
-
-def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    norms = np.linalg.norm(values, axis=1, keepdims=True)
-    return values / np.maximum(norms, eps)
-
 
 def build_model_default(device: torch.device) -> torch.nn.Module:
     logger.info("Loading default MegaDescriptor-L-384 from Hugging Face...")

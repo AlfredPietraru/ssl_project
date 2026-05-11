@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 from pathlib import Path
@@ -7,14 +6,10 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
+from main_utils import normalize_rows
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GALLERY_VALIDATION")
-
-DEFAULT_OUTPUT_DIR = Path("artifacts") / "gallery_validation"
-DEFAULT_RANDOM_SEED = 42
-DEFAULT_KNOWN_VAL_RATIO = 0.20
-DEFAULT_UNSEEN_VAL_RATIO = 0.20
 
 
 def load_train_embeddings(embeddings_dir: Path) -> tuple[np.ndarray, pd.DataFrame]:
@@ -59,12 +54,6 @@ def filter_known_training_identities(
 
     filtered_metadata["embedding_index"] = np.arange(len(filtered_metadata))
     return filtered_embeddings, filtered_metadata
-
-
-def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    norms = np.linalg.norm(values, axis=1, keepdims=True)
-    return values / np.maximum(norms, eps)
-
 
 def build_identity_gallery(
     embeddings: np.ndarray,
@@ -179,29 +168,19 @@ def save_split(
     return embeddings_path, metadata_path
 
 
-def write_summary(summary: dict[str, object], output_dir: Path) -> Path:
-    summary_path = output_dir / "validation_summary.json"
-    with summary_path.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2, sort_keys=True)
-    return summary_path
-
-
 def build_gallery_and_validation(
     cfg: CFG,
-    output_dir: Path = DEFAULT_OUTPUT_DIR,
-    known_val_ratio: float = DEFAULT_KNOWN_VAL_RATIO,
-    unseen_val_ratio: float = DEFAULT_UNSEEN_VAL_RATIO,
-    random_seed: int = DEFAULT_RANDOM_SEED,
 ) -> None:
+    output_dir = Path(cfg.gallery_validation_output_dir)
     embeddings_dir = Path(cfg.embeddings_output_dir)
     embeddings, metadata = load_train_embeddings(embeddings_dir)
     embeddings, metadata = filter_known_training_identities(embeddings, metadata)
 
     known_train_ids, known_val_ids, unseen_val_ids = split_identities_for_open_set_validation(
         metadata=metadata,
-        known_val_ratio=known_val_ratio,
-        unseen_val_ratio=unseen_val_ratio,
-        random_seed=random_seed,
+        known_val_ratio=cfg.known_val_ratio,
+        unseen_val_ratio=cfg.unseen_val_ratio,
+        random_seed=cfg.validation_random_seed,
     )
 
     known_train_embeddings, known_train_metadata = slice_split(
@@ -231,9 +210,9 @@ def build_gallery_and_validation(
     save_split("unseen_val", unseen_val_embeddings, unseen_val_metadata, output_dir)
 
     summary = {
-        "random_seed": random_seed,
-        "known_val_ratio": known_val_ratio,
-        "unseen_val_ratio": unseen_val_ratio,
+        "random_seed": cfg.validation_random_seed,
+        "known_val_ratio": cfg.known_val_ratio,
+        "unseen_val_ratio": cfg.unseen_val_ratio,
         "train_samples_total": int(len(metadata)),
         "gallery_image_samples": int(len(known_train_metadata)),
         "gallery_identity_count": int(gallery_metadata["identity"].nunique()),
@@ -242,22 +221,14 @@ def build_gallery_and_validation(
         "unseen_val_samples": int(len(unseen_val_metadata)),
         "unseen_val_identities": int(unseen_val_metadata["identity"].nunique()),
     }
-    summary_path = write_summary(summary, output_dir)
+    summary_path = output_dir / "validation_summary.json"
+    with summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
 
     logger.info("Saved gallery and validation artifacts to %s", output_dir)
     logger.info("Validation summary written to %s", summary_path)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Build a known-identity gallery and an open-set validation split from train embeddings."
-    )
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to the YAML configuration file.",
-    )
-    args = parser.parse_args()
-
-    cfg = CFG(args.config)
+    cfg = CFG("config.yaml")
     build_gallery_and_validation(cfg)
