@@ -1,8 +1,11 @@
 import logging
 import os
+import random
 import shutil
 from pathlib import Path
 
+import numpy as np
+import torch
 from wildlife_datasets.datasets import AnimalCLEF2026
 
 from dotenv import load_dotenv
@@ -16,6 +19,25 @@ import matplotlib.pyplot as plt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MAIN")
+
+
+def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    return values / np.maximum(norms, eps)
+
+
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
 
 def plot_loss(train_losses, save_name="simclr_loss.png"):
