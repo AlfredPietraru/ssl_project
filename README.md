@@ -3,6 +3,9 @@ Develop model capable of discovering clustering individual animals from images.
 goal of lookup + discovery -> uses the identity database, group the remaining test images into individuals when they do not match any known identity
 handle both known and unknown individuals
 
+Detailed next-step workflow after contrastive training:
+[`docs/instance_identification_system.md`](/home/alf/ssl/docs/instance_identification_system.md)
+
 
 Feature extraction: -> pre-trained model: MegaDescriptor
 competition follows discovery setting -> many test individuals not present in training, assign new images to previously unseen identities

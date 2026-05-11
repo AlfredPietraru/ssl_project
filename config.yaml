@@ -1,0 +1,15 @@
+root: "data"
+batch_size: 16
+num_workers: 4
+epochs: 3
+lr: 1e-5
+weight_decay: 1e-4
+temperature: 0.5
+projection_dim: 256
+projection_hidden_dim: 512
+projection_dropout: 0.0
+checkpoint_dir: "checkpoints_simclr"
+embedding_checkpoint_path: "artifacts/embedding_checkpoints/embedding_backbone.pt"
+embeddings_output_dir: "artifacts/embeddings"
+max_samples: null
+normalize_embeddings: true
