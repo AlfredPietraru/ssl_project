@@ -90,8 +90,6 @@ def main(config : dict[str, any]) -> None:
         start_time = time.perf_counter()
 
         for batch_idx, (images, labels) in enumerate(train_loader, start=1):
-            if batch_idx == 200:
-                break
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
@@ -168,13 +166,12 @@ if __name__ == "__main__":
         "root": "data",
         "batch_size": 16,
         "num_workers": 4,
-        "epochs": 3,
+        "epochs": 20,
         "lr": 1e-5,
         "weight_decay": 1e-4,
         "temperature": 0.5,
-        "projection_dim": 256,
+        "projection_dim": 128,
         "projection_hidden_dim": 512,
         "projection_dropout": 0.0,
-        "checkpoint_dir": "checkpoints_simclr",
     }
     main(config)
