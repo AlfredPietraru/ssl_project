@@ -150,7 +150,8 @@ def main(config: CFG) -> None:
         config,
         shuffle_training=True,
         training_transform=training_transform,
-        testing_transform=testing_transform
+        testing_transform=testing_transform,
+        build_eval=False,
     )
     gpu_transform = build_transformations(config)
 

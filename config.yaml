@@ -11,6 +11,7 @@ triplet_identities_per_batch: 16
 triplet_images_per_identity: 4
 projection_dim: 256
 image_size: 288
+cache_images_in_ram: true
 projection_hidden_dim: 512
 projection_dropout: 0.0
 checkpoint_dir: "checkpoints_simclr"

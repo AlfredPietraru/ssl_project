@@ -12,6 +12,7 @@ import logging
 import time
 from config import CFG
 import warnings
+from tqdm.auto import tqdm
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -43,7 +44,9 @@ class AnimalSimCLRDataset(Dataset):
         split: str = "train",
         max_samples: int | None = None,
         drop_unknown_identity: bool = True,
-        transform = None
+        transform = None,
+        cache_images_in_ram: bool = False,
+        cache_num_workers: int = 0,
     ) -> None:
         self.root = Path(root)
         self.image_size = int(image_size)
@@ -64,6 +67,7 @@ class AnimalSimCLRDataset(Dataset):
         )
         self.dataset = self.dataset.get_subset(self.metadata["_source_index"].tolist())
         self.dataset.set_transform(transform)
+        self.cached_images = self._cache_images_in_ram(cache_num_workers) if cache_images_in_ram else None
         identities = sorted(self.metadata["identity"].astype(str).unique())
         self.identity_to_label = {
             identity: label for label, identity in enumerate(identities)
@@ -93,10 +97,49 @@ class AnimalSimCLRDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index: int):
-        image, _ = self.dataset[index]
+        if self.cached_images is None:
+            image, _ = self.dataset[index]
+        else:
+            image = self.cached_images[index].clone()
         identity = self.metadata.iloc[index]["identity"]
         label = -1 if pd.isna(identity) else self.identity_to_label[str(identity)]
         return image, torch.tensor(label, dtype=torch.long)
+
+    def _cache_images_in_ram(self, num_workers: int = 0) -> torch.Tensor:
+        logger.info("Caching %s %s images in RAM", len(self.dataset), self.split)
+        loader = DataLoader(
+            self.dataset,
+            batch_size=64,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=False,
+            persistent_workers=False,
+        )
+
+        batches: list[torch.Tensor] = []
+        for batch in tqdm(
+            loader,
+            desc=f"cache {self.split}",
+            leave=False,
+        ):
+            if isinstance(batch, dict):
+                images = batch["image"]
+            else:
+                images = batch[0]
+            if not isinstance(images, torch.Tensor):
+                images = torch.stack([T.ToTensor()(image) for image in images], dim=0)
+            batches.append(images.cpu())
+
+        cached = torch.cat(batches, dim=0).contiguous()
+        gib = cached.numel() * cached.element_size() / (1024 ** 3)
+        logger.info(
+            "Cached %s %s images in RAM | shape=%s | size=%.2f GiB",
+            len(self.dataset),
+            self.split,
+            tuple(cached.shape),
+            gib,
+        )
+        return cached
 
 
 class IdentityBalancedBatchSampler(BatchSampler):
@@ -189,10 +232,12 @@ def build_simclr_data(
         config : CFG, 
         shuffle_training : bool = True, 
         training_transform = None,
-        testing_transform = None
+        testing_transform = None,
+        build_eval: bool = True,
     ) -> tuple[AnimalSimCLRDataset, AnimalSimCLRDataset, DataLoader, DataLoader]:
     batch_size = config.batch_size
-    num_workers = config.num_workers
+    cache_num_workers = config.num_workers
+    loader_num_workers = 0 if config.cache_images_in_ram else config.num_workers
 
     train_dataset = AnimalSimCLRDataset(
         root=config.root,
@@ -201,15 +246,21 @@ def build_simclr_data(
         max_samples=config.max_samples,
         drop_unknown_identity=False,
         transform=training_transform or build_cpu_training_transform(config.image_size),
+        cache_images_in_ram=config.cache_images_in_ram,
+        cache_num_workers=cache_num_workers,
     )
-    eval_dataset = AnimalSimCLRDataset(
-        root=config.root,
-        image_size=config.image_size,
-        split="test",
-        max_samples=config.max_samples,
-        drop_unknown_identity=False,
-        transform=testing_transform or build_cpu_testing_transform(config.image_size)
-    )
+    eval_dataset = None
+    if build_eval:
+        eval_dataset = AnimalSimCLRDataset(
+            root=config.root,
+            image_size=config.image_size,
+            split="test",
+            max_samples=config.max_samples,
+            drop_unknown_identity=False,
+            transform=testing_transform or build_cpu_testing_transform(config.image_size),
+            cache_images_in_ram=config.cache_images_in_ram,
+            cache_num_workers=cache_num_workers,
+        )
 
     if config.training_loss == "triplet" and shuffle_training:
         train_batch_sampler = IdentityBalancedBatchSampler(
@@ -221,9 +272,9 @@ def build_simclr_data(
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_batch_sampler,
-            num_workers=num_workers,
+            num_workers=loader_num_workers,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=loader_num_workers > 0,
         )
     else:
         train_loader = DataLoader(
@@ -231,19 +282,21 @@ def build_simclr_data(
             batch_size=batch_size,
             shuffle=shuffle_training,
             drop_last=False,
-            num_workers=num_workers,
+            num_workers=loader_num_workers,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=loader_num_workers > 0,
         )
-    eval_loader = DataLoader(
-        eval_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        persistent_workers=num_workers > 0,
-    )
+    eval_loader = None
+    if eval_dataset is not None:
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=loader_num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=loader_num_workers > 0,
+        )
     return train_dataset, eval_dataset, train_loader, eval_loader  
 
 
