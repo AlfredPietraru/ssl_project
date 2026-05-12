@@ -14,12 +14,11 @@ from animal_dataset import (
 )
 from config import CFG
 from model import ContrastiveEmbeddingModel
-from loss_functions import SupervisedContrastiveLoss
+from loss_functions import BatchHardTripletLoss, SupervisedContrastiveLoss
 from main_utils import (
     plot_loss,
     set_seed
 )
-
 
 
 warnings.filterwarnings("ignore")
@@ -33,7 +32,7 @@ def train_one_epoch(
     model: ContrastiveEmbeddingModel,
     train_loader,
     gpu_transform,
-    loss_fn: SupervisedContrastiveLoss,
+    loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.GradScaler
 ) -> float:
@@ -47,21 +46,26 @@ def train_one_epoch(
         images = images.to(config.device, non_blocking=True)
         labels = labels.to(config.device, non_blocking=True)
 
-        view_1 = gpu_transform(images)
-        view_2 = gpu_transform(images)
-
-        simclr_images = torch.cat([view_1, view_2], dim=0)
-        simclr_labels = torch.cat([labels, labels], dim=0)
-
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast("cuda", enabled=(config.device.type == "cuda")):
-            projections = model(simclr_images)
+            if config.training_loss == "triplet":
+                triplet_images = gpu_transform(images)
+                embeddings = model.extract_embeddings(triplet_images)
+                loss = loss_fn(embeddings, labels)
+            else:
+                view_1 = gpu_transform(images)
+                view_2 = gpu_transform(images)
 
-            if isinstance(projections, tuple):
-                projections = projections[-1]
+                simclr_images = torch.cat([view_1, view_2], dim=0)
+                simclr_labels = torch.cat([labels, labels], dim=0)
 
-            loss = loss_fn(projections, simclr_labels)
+                projections = model(simclr_images)
+
+                if isinstance(projections, tuple):
+                    projections = projections[-1]
+
+                loss = loss_fn(projections, simclr_labels)
 
         if not torch.isfinite(loss):
             logger.warning("Skipping non-finite loss at batch %d: %s", batch_idx, loss.item())
@@ -102,7 +106,7 @@ def train(
     model: ContrastiveEmbeddingModel,
     train_loader,
     gpu_transform,
-    loss_fn: SupervisedContrastiveLoss,
+    loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
 ) -> None:
     train_losses = []
@@ -122,7 +126,7 @@ def train(
         )
         train_losses.append(avg_loss)
 
-        plot_loss(train_losses, save_name="simclr_loss.png")
+        plot_loss(train_losses, save_name=f"{config.training_loss}_loss.png")
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -157,9 +161,16 @@ def main(config: CFG) -> None:
         allow_download=True,
     ).to(config.device)
 
-    loss_fn = SupervisedContrastiveLoss(
-        temperature=config.temperature
-    ).to(config.device) 
+    if config.training_loss == "triplet":
+        loss_fn = BatchHardTripletLoss(
+            margin=config.triplet_margin
+        ).to(config.device)
+    elif config.training_loss == "supcon":
+        loss_fn = SupervisedContrastiveLoss(
+            temperature=config.temperature
+        ).to(config.device)
+    else:
+        raise ValueError(f"Unsupported training_loss: {config.training_loss}")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as T
 import kornia.augmentation as K
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset
 from wildlife_datasets.datasets import AnimalCLEF2026
 import logging
 import time
@@ -99,6 +99,59 @@ class AnimalSimCLRDataset(Dataset):
         return image, torch.tensor(label, dtype=torch.long)
 
 
+class IdentityBalancedBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: AnimalSimCLRDataset,
+        identities_per_batch: int,
+        images_per_identity: int,
+        seed: int = 42,
+    ) -> None:
+        self.identities_per_batch = int(identities_per_batch)
+        self.images_per_identity = int(images_per_identity)
+        if self.identities_per_batch <= 0 or self.images_per_identity <= 1:
+            raise ValueError("Triplet batches need positive identities_per_batch and images_per_identity > 1.")
+
+        label_to_indices: dict[int, list[int]] = {}
+        for index in range(len(dataset)):
+            identity = dataset.metadata.iloc[index]["identity"]
+            if pd.isna(identity) or str(identity).strip().lower() == "unknown":
+                continue
+            label = dataset.identity_to_label[str(identity)]
+            label_to_indices.setdefault(label, []).append(index)
+
+        self.label_to_indices = {
+            label: indices
+            for label, indices in label_to_indices.items()
+            if len(indices) >= 2
+        }
+        self.labels = np.array(sorted(self.label_to_indices), dtype=np.int64)
+        if len(self.labels) < self.identities_per_batch:
+            raise ValueError(
+                "Not enough identities with at least two images for balanced triplet batches: "
+                f"{len(self.labels)} available, {self.identities_per_batch} requested."
+            )
+
+        self.batch_size = self.identities_per_batch * self.images_per_identity
+        self.num_batches = max(1, sum(len(indices) for indices in self.label_to_indices.values()) // self.batch_size)
+        self.rng = np.random.default_rng(seed)
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            selected_labels = self.rng.choice(self.labels, size=self.identities_per_batch, replace=False)
+            batch: list[int] = []
+            for label in selected_labels:
+                indices = self.label_to_indices[int(label)]
+                replace = len(indices) < self.images_per_identity
+                sampled = self.rng.choice(indices, size=self.images_per_identity, replace=replace)
+                batch.extend(int(index) for index in sampled)
+            self.rng.shuffle(batch)
+            yield batch
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+
 class SimCLRGPUTransform(nn.Module):
     def __init__(self, image_size: int) -> None:
         super().__init__()
@@ -158,15 +211,30 @@ def build_simclr_data(
         transform=testing_transform or build_cpu_testing_transform(config.image_size)
     )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle_training,
-        drop_last=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        persistent_workers=num_workers > 0,
-    )
+    if config.training_loss == "triplet" and shuffle_training:
+        train_batch_sampler = IdentityBalancedBatchSampler(
+            train_dataset,
+            identities_per_batch=config.triplet_identities_per_batch,
+            images_per_identity=config.triplet_images_per_identity,
+            seed=config.validation_random_seed,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_batch_sampler,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=shuffle_training,
+            drop_last=False,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+        )
     eval_loader = DataLoader(
         eval_dataset,
         batch_size=batch_size,
