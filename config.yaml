@@ -6,6 +6,7 @@ lr: 1e-5
 weight_decay: 1e-4
 temperature: 0.5
 projection_dim: 256
+image_size: 288
 projection_hidden_dim: 512
 projection_dropout: 0.0
 checkpoint_dir: "checkpoints_simclr"
@@ -18,7 +19,7 @@ validation_random_seed: 42
 known_val_ratio: 0.20
 unseen_val_ratio: 0.20
 thresholds_output_dir: "artifacts/thresholds"
-threshold_search_steps: 100
+threshold_search_steps: 50
 matching_output_dir: "artifacts/matching"
 matching_top_k: 5
 rejection_output_dir: "artifacts/rejection"
