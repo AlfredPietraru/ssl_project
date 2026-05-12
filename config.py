@@ -40,7 +40,7 @@ class CFG:
     refinement_min_cluster_similarity: float = 0.85
     refinement_known_confidence_threshold: float = 0.90
     final_output_dir: str = "artifacts/final"
-    final_assignments_filename: str = "final_assignments.csv"
+    final_assignments_filename: str = "submission.csv"
 
     def __init__(self, config_path: str | Path = "config.yaml") -> None:
         data = self._load_yaml_mapping(config_path)

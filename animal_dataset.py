@@ -88,8 +88,8 @@ class AnimalSimCLRDataset(Dataset):
 
     def __getitem__(self, index: int):
         image, _ = self.dataset[index]
-        identity = str(self.metadata.iloc[index]["identity"])
-        label = self.identity_to_label[identity]
+        identity = self.metadata.iloc[index]["identity"]
+        label = -1 if pd.isna(identity) else self.identity_to_label[str(identity)]
         return image, torch.tensor(label, dtype=torch.long)
 
 
@@ -98,6 +98,8 @@ class SimCLRGPUTransform(nn.Module):
         super().__init__()
         kernel_size = max(3, int(0.1 * 384) // 2 * 2 + 1)
         self.augment = nn.Sequential(
+            K.RandomHorizontalFlip(p=0.5),
+            K.RandomAffine(degrees=10, translate=(0.03, 0.03), scale=(0.95, 1.05), p=0.4),
             K.ColorJitter(
                 brightness=0.25,
                 contrast=0.25,
@@ -105,12 +107,12 @@ class SimCLRGPUTransform(nn.Module):
                 hue=0.20,
                 p=0.8,
             ),
-            K.RandomGrayscale(p=0.2),
-            K.RandomGaussianBlur(
-                kernel_size=(kernel_size, kernel_size),
-                sigma=(0.1, 2.0),
-                p=0.5,
-            ),
+            K.RandomGrayscale(p=0.1),
+            # K.RandomGaussianBlur(
+            #     kernel_size=(kernel_size, kernel_size),
+            #     sigma=(0.1, 2.0),
+            #     p=0.5,
+            # ),
             K.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
         )
         
@@ -224,4 +226,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

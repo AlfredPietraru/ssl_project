@@ -108,10 +108,11 @@ class ContrastiveEmbeddingModel(nn.Module):
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
         dropout: float = 0.0,
+        allow_download=False
     ):
         super().__init__()
 
-        self.backbone = load_mega_descriptor_model_feature_extraction()
+        self.backbone = load_mega_descriptor_model_feature_extraction(allow_download=allow_download)
         self.embedding_dim = int(self.backbone.num_features)  # type: ignore[attr-defined]
         self.projection_head = nn.Sequential(
             nn.Linear(self.embedding_dim, projection_hidden_dim),
