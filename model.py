@@ -160,7 +160,7 @@ class ContrastiveEmbeddingModel(nn.Module):
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
         dropout: float = 0.0,
-        allow_download=False,
+        allow_download=False
     ):
         super().__init__()
 

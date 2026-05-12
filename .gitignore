@@ -11,3 +11,4 @@ tmp
 data_embeddings
 venv
 .agents
+logs.txt

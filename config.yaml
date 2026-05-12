@@ -1,7 +1,6 @@
 root: "data"
-image_size: 288
-batch_size: 16
-num_workers: 4
+batch_size: 8
+num_workers: 8
 epochs: 3
 lr: 1e-5
 weight_decay: 1e-4
@@ -19,7 +18,7 @@ validation_random_seed: 42
 known_val_ratio: 0.20
 unseen_val_ratio: 0.20
 thresholds_output_dir: "artifacts/thresholds"
-threshold_search_steps: 200
+threshold_search_steps: 100
 matching_output_dir: "artifacts/matching"
 matching_top_k: 5
 rejection_output_dir: "artifacts/rejection"
@@ -31,4 +30,4 @@ refinement_min_cluster_size: 2
 refinement_min_cluster_similarity: 0.85
 refinement_known_confidence_threshold: 0.90
 final_output_dir: "artifacts/final"
-final_assignments_filename: "final_assignments.csv"
+final_assignments_filename: "submission.csv"
