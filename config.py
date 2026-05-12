@@ -1,51 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import torch
 
 
-@dataclass(slots=True, init=False)
-class CFG:
-    root: str = "data"
-    batch_size: int = 16
-    num_workers: int = 4
-    epochs: int = 3
-    lr: float = 1e-5
-    weight_decay: float = 1e-4
-    temperature: float = 0.5
-    projection_dim: int = 256
-    projection_hidden_dim: int = 512
-    projection_dropout: float = 0.0
-    checkpoint_dir: str = "checkpoints_simclr"
-    device: torch.device
-    embedding_checkpoint_path: str = "artifacts/embedding_checkpoints/embedding_backbone.pt"
-    embeddings_output_dir: str = "artifacts/embeddings"
-    max_samples: int | None = None
-    normalize_embeddings: bool = True
-    gallery_validation_output_dir: str = "artifacts/gallery_validation"
-    validation_random_seed: int = 42
-    known_val_ratio: float = 0.20
-    unseen_val_ratio: float = 0.20
-    thresholds_output_dir: str = "artifacts/thresholds"
-    threshold_search_steps: int = 200
-    matching_output_dir: str = "artifacts/matching"
-    matching_top_k: int = 5
-    rejection_output_dir: str = "artifacts/rejection"
-    clustering_output_dir: str = "artifacts/clustering"
-    clustering_similarity_threshold: float = 0.80
-    clustering_min_cluster_size: int = 1
-    refinement_output_dir: str = "artifacts/refinement"
-    refinement_min_cluster_size: int = 2
-    refinement_min_cluster_similarity: float = 0.85
-    refinement_known_confidence_threshold: float = 0.90
-    final_output_dir: str = "artifacts/final"
-    final_assignments_filename: str = "final_assignments.csv"
 
+class CFG:
     def __init__(self, config_path: str | Path = "config.yaml") -> None:
         data = self._load_yaml_mapping(config_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.root = str(data["root"])
+        self.image_size = int(data["image_size"])  # type: ignore[arg-type]
         self.batch_size = int(data["batch_size"])  # type: ignore[arg-type]
         self.num_workers = int(data["num_workers"])  # type: ignore[arg-type]
         self.epochs = int(data["epochs"])  # type: ignore[arg-type]
@@ -83,6 +49,7 @@ class CFG:
     def to_dict(self) -> dict[str, object]:
         return {
             "root": self.root,
+            "image_size": self.image_size,
             "batch_size": self.batch_size,
             "num_workers": self.num_workers,
             "epochs": self.epochs,
@@ -136,6 +103,7 @@ class CFG:
 
         required_fields = {
             "root",
+            "image_size",
             "batch_size",
             "num_workers",
             "epochs",

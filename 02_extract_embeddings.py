@@ -10,6 +10,7 @@ from animal_dataset import (
     build_simclr_data,
     testing_transform
 )
+from main_utils import require_existing_paths
 from model import load_embedding_backbone_checkpoint
 
 logging.basicConfig(level=logging.INFO)
@@ -69,8 +70,13 @@ def save_split_outputs(
 
 def extract_embeddings_model(cfg : CFG) -> None:
     root = Path(cfg.root)
-    if not root.exists():
-        raise FileNotFoundError(f"Dataset root '{root}' does not exist.")
+    require_existing_paths(
+        [
+            (root, "the dataset preparation step"),
+            (Path(cfg.embedding_checkpoint_path), "step 01 model training"),
+        ],
+        step_name="Step 02 embedding extraction",
+    )
 
     logger.info("Loading fine-tuned embedding backbone from %s", cfg.embedding_checkpoint_path)
     model = load_embedding_backbone_checkpoint(

@@ -26,6 +26,40 @@ def normalize_rows(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return values / np.maximum(norms, eps)
 
 
+def require_existing_paths(
+    requirements: list[tuple[Path, str]],
+    *,
+    step_name: str,
+) -> None:
+    missing = [(path, producer_step) for path, producer_step in requirements if not path.exists()]
+    if not missing:
+        return
+
+    missing_lines = [
+        f"- Missing required input `{path}`. Expected from {producer_step}."
+        for path, producer_step in missing
+    ]
+    joined_lines = "\n".join(missing_lines)
+    raise FileNotFoundError(
+        f"{step_name} cannot start because required outputs from previous steps are missing:\n"
+        f"{joined_lines}"
+    )
+
+
+def require_split_artifacts(
+    base_dir: Path,
+    split_names: list[str],
+    *,
+    step_name: str,
+    producer_step: str,
+) -> None:
+    requirements: list[tuple[Path, str]] = []
+    for split_name in split_names:
+        requirements.append((base_dir / f"{split_name}_embeddings.npy", producer_step))
+        requirements.append((base_dir / f"{split_name}_metadata.csv", producer_step))
+    require_existing_paths(requirements, step_name=step_name)
+
+
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)

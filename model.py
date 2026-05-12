@@ -12,9 +12,71 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MODEL")
 
-MEGA_DESCRIPTOR_MODEL_ID = "hf-hub:BVRA/MegaDescriptor-L-384"
-MEGA_DESCRIPTOR_LOCAL_WEIGHTS = Path("artifacts") / "mega_descriptor_l_384.pth"
+MEGA_DESCRIPTOR_MODEL_ID = "hf-hub:BVRA/MegaDescriptor-T-CNN-288"
+MEGA_DESCRIPTOR_LOCAL_WEIGHTS = Path("artifacts") / "mega_descriptor_t_cnn_288.pth"
 EMBEDDING_CHECKPOINT_PATH = Path("artifacts") / "embedding_checkpoints" / "embedding_backbone.pt"
+
+
+def _extract_backbone_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"Unsupported checkpoint format: {type(checkpoint)}")
+
+    if "backbone_state_dict" in checkpoint:
+        state_dict = checkpoint["backbone_state_dict"]
+    elif "model_state_dict" in checkpoint:
+        state_dict = {
+            key.replace("backbone.", ""): value
+            for key, value in checkpoint["model_state_dict"].items()
+            if key.startswith("backbone.")
+        }
+        if not state_dict:
+            raise ValueError(
+                "Checkpoint has model_state_dict, but no keys starting with 'backbone.'."
+            )
+    elif "model" in checkpoint:
+        model_state = checkpoint["model"]
+        if not isinstance(model_state, dict):
+            raise ValueError("Checkpoint field 'model' is not a state dict.")
+        if any(key.startswith("backbone.") for key in model_state):
+            state_dict = {
+                key.replace("backbone.", ""): value
+                for key, value in model_state.items()
+                if key.startswith("backbone.")
+            }
+        else:
+            state_dict = model_state
+    else:
+        state_dict = checkpoint
+
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"Unsupported state_dict format: {type(state_dict)}")
+
+    return state_dict
+
+
+def _load_backbone_weights(model: nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    missing_keys = set(incompatible.missing_keys)
+    unexpected_keys = set(incompatible.unexpected_keys)
+
+    allowed_missing = {"classifier.weight", "classifier.bias"}
+    disallowed_missing = missing_keys - allowed_missing
+
+    if disallowed_missing or unexpected_keys:
+        raise RuntimeError(
+            "Backbone checkpoint is incompatible. "
+            f"Missing keys: {sorted(disallowed_missing)}. "
+            f"Unexpected keys: {sorted(unexpected_keys)}."
+        )
+
+
+def _extract_model_features(model: nn.Module, images: torch.Tensor) -> torch.Tensor:
+    if hasattr(model, "forward_features"):
+        features = model.forward_features(images)  # type: ignore[attr-defined]
+        if hasattr(model, "forward_head"):
+            features = model.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
+        return features
+    return model(images)
 
 
 def load_mega_descriptor_model_feature_extraction(
@@ -22,6 +84,7 @@ def load_mega_descriptor_model_feature_extraction(
     allow_download: bool = False,
 ) -> nn.Module:
     import timm
+    from huggingface_hub import hf_hub_download
 
     try:
         if not allow_download:
@@ -34,15 +97,20 @@ def load_mega_descriptor_model_feature_extraction(
         )
 
         if weights_path.exists():
-            state_dict = torch.load(weights_path, map_location="cpu")
-            model.load_state_dict(state_dict)
-            logger.info("Loaded MegaDescriptor model from local weights: %s", weights_path)
+            checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+            state_dict = _extract_backbone_state_dict(checkpoint)
+            _load_backbone_weights(model, state_dict)
+            logger.info("Loaded %s from local weights: %s", MEGA_DESCRIPTOR_MODEL_ID, weights_path)
         elif allow_download:
-            logger.info("Downloading MegaDescriptor model from HuggingFace...")
-            model = timm.create_model(
-                MEGA_DESCRIPTOR_MODEL_ID,
-                pretrained=True,
+            logger.info("Downloading %s from HuggingFace...", MEGA_DESCRIPTOR_MODEL_ID)
+            repo_id = MEGA_DESCRIPTOR_MODEL_ID.removeprefix("hf-hub:")
+            cached_checkpoint = hf_hub_download(
+                repo_id=repo_id,
+                filename="pytorch_model.bin",
             )
+            checkpoint = torch.load(cached_checkpoint, map_location="cpu", weights_only=False)
+            state_dict = _extract_backbone_state_dict(checkpoint)
+            _load_backbone_weights(model, state_dict)
             weights_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), weights_path)
             logger.info("Saved model locally at %s", weights_path)
@@ -75,25 +143,9 @@ def load_embedding_backbone_checkpoint(
         allow_download=allow_download,
     )
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = _extract_backbone_state_dict(checkpoint)
 
-    if isinstance(checkpoint, dict) and "backbone_state_dict" in checkpoint:
-        state_dict = checkpoint["backbone_state_dict"]
-    elif isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        state_dict = {
-            key.replace("backbone.", ""): value
-            for key, value in checkpoint["model_state_dict"].items()
-            if key.startswith("backbone.")
-        }
-        if not state_dict:
-            raise ValueError(
-                "Checkpoint has model_state_dict, but no keys starting with 'backbone.'."
-            )
-    elif isinstance(checkpoint, dict):
-        state_dict = checkpoint
-    else:
-        raise ValueError(f"Unsupported checkpoint format: {type(checkpoint)}")
-
-    model.load_state_dict(state_dict)
+    _load_backbone_weights(model, state_dict)
     model.to(device)
     if eval_mode:
         model.eval()
@@ -108,10 +160,11 @@ class ContrastiveEmbeddingModel(nn.Module):
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
         dropout: float = 0.0,
+        allow_download=False,
     ):
         super().__init__()
 
-        self.backbone = load_mega_descriptor_model_feature_extraction()
+        self.backbone = load_mega_descriptor_model_feature_extraction(allow_download=allow_download)
         self.embedding_dim = int(self.backbone.num_features)  # type: ignore[attr-defined]
         self.projection_head = nn.Sequential(
             nn.Linear(self.embedding_dim, projection_hidden_dim),
@@ -121,10 +174,10 @@ class ContrastiveEmbeddingModel(nn.Module):
         )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        return self.projection_head(self.backbone(images))
+        return self.projection_head(_extract_model_features(self.backbone, images))
 
     def extract_embeddings(self, images: torch.Tensor) -> torch.Tensor:
-        return self.backbone(images)
+        return _extract_model_features(self.backbone, images)
 
     def save_full_checkpoint(
         self,
@@ -148,57 +201,3 @@ class ContrastiveEmbeddingModel(nn.Module):
             },
             save_path,
         )
-
-
-def synchronize_if_cuda(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-
-def build_one_simclr_batch(simclr_data: dict[str, object]) -> tuple[torch.Tensor, torch.Tensor]:
-    device = simclr_data["device"]
-    gpu_transform = simclr_data["gpu_transform"]
-    train_loader = simclr_data["train_loader"]
-
-    images, labels = next(iter(train_loader))
-    images = images.to(device, non_blocking=True)
-    labels = labels.to(device, non_blocking=True)
-
-    view_1 = gpu_transform(images)
-    view_2 = gpu_transform(images)
-    simclr_images = torch.cat([view_1, view_2], dim=0)
-    simclr_labels = torch.cat([labels, labels], dim=0)
-    synchronize_if_cuda(device)
-    return simclr_images, simclr_labels
-
-
-def main() -> None:
-    config = {
-        "root": "data",
-        "image_size": 384,
-        "batch_size": 4,
-        "num_workers": 1,
-        "projection_dim": 256,
-        "projection_hidden_dim": 512,
-        "projection_dropout": 0.0,
-    }
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    simclr_data = build_simclr_data(config)
-    model = ContrastiveEmbeddingModel(
-        projection_dim=int(config["projection_dim"]),
-        projection_hidden_dim=int(config["projection_hidden_dim"]),
-        dropout=float(config["projection_dropout"]),
-    ).to(device=device)
-
-    simclr_images, simclr_labels = build_one_simclr_batch(simclr_data)
-    forward_output = model(simclr_images)
-
-    logger.info("Device: %s", device)
-    logger.info("SimCLR images shape: %s", tuple(simclr_images.shape))
-    logger.info("SimCLR labels shape: %s", tuple(simclr_labels.shape))
-    logger.info("Backbone embedding dimension: %s", model.embedding_dim)
-    logger.info("Forward output shape: %s", tuple(forward_output.shape))
-
-
-if __name__ == "__main__":
-    main()

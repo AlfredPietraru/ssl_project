@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
-from main_utils import normalize_rows
+from main_utils import normalize_rows, require_existing_paths, require_split_artifacts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("STEP08_CLUSTERING")
@@ -39,6 +39,16 @@ def cluster_rejected_unknowns(cfg: CFG) -> None:
     rejection_dir = Path(cfg.rejection_output_dir)
     embeddings_dir = Path(cfg.embeddings_output_dir)
     output_dir = Path(cfg.clustering_output_dir)
+    require_existing_paths(
+        [(rejection_dir / "rejected_unknowns.csv", "step 07 low-confidence rejection")],
+        step_name="Step 08 clustering rejected unknowns",
+    )
+    require_split_artifacts(
+        embeddings_dir,
+        ["test"],
+        step_name="Step 08 clustering rejected unknowns",
+        producer_step="step 02 embedding extraction",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rejected = pd.read_csv(rejection_dir / "rejected_unknowns.csv")

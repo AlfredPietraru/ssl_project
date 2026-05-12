@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from config import CFG
+from main_utils import require_existing_paths
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("STEP10_EXPORT")
@@ -14,6 +15,13 @@ def export_final_assignments(cfg: CFG) -> None:
     clustering_dir = Path(cfg.clustering_output_dir)
     refinement_dir = Path(cfg.refinement_output_dir)
     output_dir = Path(cfg.final_output_dir)
+    require_existing_paths(
+        [
+            (rejection_dir / "known_matches.csv", "step 07 low-confidence rejection"),
+            (clustering_dir / "unknown_cluster_assignments.csv", "step 08 clustering rejected unknowns"),
+        ],
+        step_name="Step 10 final export",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     refined_assignments_path = refinement_dir / "refined_assignments.csv"

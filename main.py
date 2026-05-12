@@ -154,6 +154,7 @@ def main(config: CFG) -> None:
         projection_dim=config.projection_dim,
         projection_hidden_dim=config.projection_hidden_dim,
         dropout=config.projection_dropout,
+        allow_download=True,
     ).to(config.device)
 
     loss_fn = SupervisedContrastiveLoss(

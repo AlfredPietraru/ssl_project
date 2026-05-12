@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
-from main_utils import normalize_rows
+from main_utils import normalize_rows, require_split_artifacts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("CALIBRATE_THRESHOLDS")
@@ -187,6 +187,12 @@ def search_thresholds(scores: pd.DataFrame, search_steps: int) -> dict[str, floa
 def calibrate_thresholds(cfg: CFG) -> None:
     input_dir = Path(cfg.gallery_validation_output_dir)
     output_dir = Path(cfg.thresholds_output_dir)
+    require_split_artifacts(
+        input_dir,
+        ["gallery_prototypes", "gallery_images", "known_val", "unseen_val"],
+        step_name="Step 05 threshold calibration",
+        producer_step="step 03/04 gallery and validation builder",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     gallery_prototypes, gallery_prototype_metadata = load_split(input_dir, "gallery_prototypes")

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 source venv_ssl_proj/bin/activate
-python3 main_utils.py
-python3 main.py
+# python3 main_utils.py
+# python3 main.py
 python3 02_extract_embeddings.py
 python3 03_04_build_gallery_and_validation.py
 python3 05_calibrate_rejection_thresholds.py

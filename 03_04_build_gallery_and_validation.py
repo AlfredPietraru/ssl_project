@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
-from main_utils import normalize_rows
+from main_utils import normalize_rows, require_split_artifacts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GALLERY_VALIDATION")
@@ -173,6 +173,12 @@ def build_gallery_and_validation(
 ) -> None:
     output_dir = Path(cfg.gallery_validation_output_dir)
     embeddings_dir = Path(cfg.embeddings_output_dir)
+    require_split_artifacts(
+        embeddings_dir,
+        ["train"],
+        step_name="Step 03/04 gallery and validation builder",
+        producer_step="step 02 embedding extraction",
+    )
     embeddings, metadata = load_train_embeddings(embeddings_dir)
     embeddings, metadata = filter_known_training_identities(embeddings, metadata)
 

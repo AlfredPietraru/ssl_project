@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
+from main_utils import require_existing_paths
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("STEP09_REFINEMENT")
@@ -16,6 +17,17 @@ def refine_with_incremental_enrollment(cfg: CFG) -> None:
     rejection_dir = Path(cfg.rejection_output_dir)
     clustering_dir = Path(cfg.clustering_output_dir)
     output_dir = Path(cfg.refinement_output_dir)
+    require_existing_paths(
+        [
+            (gallery_dir / "full_gallery_prototypes_embeddings.npy", "step 03/04 gallery and validation builder"),
+            (gallery_dir / "full_gallery_prototypes_metadata.csv", "step 03/04 gallery and validation builder"),
+            (rejection_dir / "known_matches.csv", "step 07 low-confidence rejection"),
+            (clustering_dir / "unknown_cluster_assignments.csv", "step 08 clustering rejected unknowns"),
+            (clustering_dir / "unknown_cluster_prototypes_embeddings.npy", "step 08 clustering rejected unknowns"),
+            (clustering_dir / "unknown_cluster_prototypes_metadata.csv", "step 08 clustering rejected unknowns"),
+        ],
+        step_name="Step 09 refinement with incremental enrollment",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     gallery_proto_embeddings = np.load(gallery_dir / "full_gallery_prototypes_embeddings.npy")

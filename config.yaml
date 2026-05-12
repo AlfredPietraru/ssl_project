@@ -1,4 +1,5 @@
 root: "data"
+image_size: 288
 batch_size: 16
 num_workers: 4
 epochs: 3

@@ -10,3 +10,4 @@ artifacts
 tmp
 data_embeddings
 venv
+.agents

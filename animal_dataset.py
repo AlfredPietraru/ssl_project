@@ -14,39 +14,45 @@ from config import CFG
 import warnings
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
-training_transform = T.Compose([
-                T.Resize((384, 384)),
-                T.ToTensor(),
-])
 
 
-testing_transform = T.Compose([
-                T.Resize((384, 384)),
-                T.ToTensor(),
-                T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-]) 
+def build_cpu_training_transform(image_size: int) -> T.Compose:
+    return T.Compose([
+        T.Resize((image_size, image_size)),
+        T.ToTensor(),
+    ])
+
+
+def build_cpu_testing_transform(image_size: int) -> T.Compose:
+    return T.Compose([
+        T.Resize((image_size, image_size)),
+        T.ToTensor(),
+        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ])
+
+
+training_transform = build_cpu_training_transform(288)
+testing_transform = build_cpu_testing_transform(288)
 
 
 class AnimalSimCLRDataset(Dataset):
     def __init__(
         self,
         root: str | Path,
+        image_size: int,
         split: str = "train",
         max_samples: int | None = None,
         drop_unknown_identity: bool = True,
         transform = None
     ) -> None:
         self.root = Path(root)
+        self.image_size = int(image_size)
         if not self.root.exists():
             raise FileNotFoundError(f"Dataset root '{self.root}' does not exist.")
         
         self.split  = split
         self.dataset = AnimalCLEF2026(
             str(self.root),
-            transform=T.Compose([
-                T.Resize((384, 384)),
-                T.ToTensor()
-            ]),
             load_label=True,
             factorize_label=True,
             check_files=False,
@@ -94,9 +100,9 @@ class AnimalSimCLRDataset(Dataset):
 
 
 class SimCLRGPUTransform(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, image_size: int) -> None:
         super().__init__()
-        kernel_size = max(3, int(0.1 * 384) // 2 * 2 + 1)
+        kernel_size = max(3, int(0.1 * image_size) // 2 * 2 + 1)
         self.augment = nn.Sequential(
             K.ColorJitter(
                 brightness=0.25,
@@ -119,7 +125,7 @@ class SimCLRGPUTransform(nn.Module):
     
 
 def build_transformations(config : CFG):
-    transformations = SimCLRGPUTransform()
+    transformations = SimCLRGPUTransform(config.image_size)
     transformations = transformations.to(config.device)
     transformations = transformations.eval()
     return transformations
@@ -135,17 +141,19 @@ def build_simclr_data(
 
     train_dataset = AnimalSimCLRDataset(
         root=config.root,
+        image_size=config.image_size,
         split="train",
         max_samples=config.max_samples,
         drop_unknown_identity=False,
-        transform=training_transform,
+        transform=training_transform or build_cpu_training_transform(config.image_size),
     )
     eval_dataset = AnimalSimCLRDataset(
         root=config.root,
+        image_size=config.image_size,
         split="test",
         max_samples=config.max_samples,
         drop_unknown_identity=False,
-        transform=testing_transform
+        transform=testing_transform or build_cpu_testing_transform(config.image_size)
     )
 
     train_loader = DataLoader(
@@ -224,4 +232,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

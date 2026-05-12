@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
-from main_utils import normalize_rows
+from main_utils import normalize_rows, require_split_artifacts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("STEP06_MATCHING")
@@ -46,6 +46,18 @@ def run_matching(cfg: CFG) -> None:
     gallery_dir = Path(cfg.gallery_validation_output_dir)
     embeddings_dir = Path(cfg.embeddings_output_dir)
     output_dir = Path(cfg.matching_output_dir)
+    require_split_artifacts(
+        gallery_dir,
+        ["full_gallery_prototypes", "full_gallery_images"],
+        step_name="Step 06 nearest-neighbor matching",
+        producer_step="step 03/04 gallery and validation builder",
+    )
+    require_split_artifacts(
+        embeddings_dir,
+        ["test"],
+        step_name="Step 06 nearest-neighbor matching",
+        producer_step="step 02 embedding extraction",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     gallery_prototypes, gallery_proto_meta = load_split(gallery_dir, "full_gallery_prototypes")

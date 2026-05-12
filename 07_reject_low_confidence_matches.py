@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import CFG
+from main_utils import require_existing_paths
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("STEP07_REJECTION")
@@ -15,6 +16,13 @@ def reject_low_confidence_matches(cfg: CFG) -> None:
     matching_dir = Path(cfg.matching_output_dir)
     thresholds_dir = Path(cfg.thresholds_output_dir)
     output_dir = Path(cfg.rejection_output_dir)
+    require_existing_paths(
+        [
+            (matching_dir / "match_scores.csv", "step 06 nearest-neighbor matching"),
+            (thresholds_dir / "rejection_thresholds.json", "step 05 threshold calibration"),
+        ],
+        step_name="Step 07 low-confidence rejection",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     scores = pd.read_csv(matching_dir / "match_scores.csv")
