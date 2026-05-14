@@ -70,15 +70,6 @@ def _load_backbone_weights(model: nn.Module, state_dict: dict[str, torch.Tensor]
         )
 
 
-def _extract_model_features(model: nn.Module, images: torch.Tensor) -> torch.Tensor:
-    if hasattr(model, "forward_features"):
-        features = model.forward_features(images)  # type: ignore[attr-defined]
-        if hasattr(model, "forward_head"):
-            features = model.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
-        return features
-    return model(images)
-
-
 def load_mega_descriptor_model_feature_extraction(
     weights_path: Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
     allow_download: bool = False,
@@ -159,7 +150,7 @@ class ContrastiveEmbeddingModel(nn.Module):
         self,
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
-        dropout: float = 0.0,
+        dropout: float = 0.2,
         allow_download=False
     ):
         super().__init__()
@@ -174,30 +165,42 @@ class ContrastiveEmbeddingModel(nn.Module):
         )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        return self.projection_head(_extract_model_features(self.backbone, images))
+        if hasattr(self.backbone, "forward_features"):
+            features = self.backbone.forward_features(images)  # type: ignore[attr-defined]
+            if hasattr(self.backbone, "forward_head"):
+                features = self.backbone.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
+        else:
+            features = self.backbone(images)
+        return self.projection_head(features)
 
     def extract_embeddings(self, images: torch.Tensor) -> torch.Tensor:
-        return _extract_model_features(self.backbone, images)
+        if hasattr(self.backbone, "forward_features"):
+            features = self.backbone.forward_features(images)  # type: ignore[attr-defined]
+            if hasattr(self.backbone, "forward_head"):
+                features = self.backbone.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
+            return features
+        return self.backbone(images)
 
-    def save_full_checkpoint(
+    def save_checkpoints(
         self,
         checkpoint_data: dict,
-        path_name: str = "contrastive_model.pt",
-    ) -> None:
-        save_dir = Path("artifacts") / "full_model_checkpoints"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(checkpoint_data, save_dir / path_name)
+        full_model_path_name: str = "contrastive_model.pt",
+        embedding_path_name: str = "embedding_backbone.pt",
+    ) -> tuple[Path, Path]:
+        full_model_dir = Path("artifacts") / "full_model_checkpoints"
+        embedding_dir = Path("artifacts") / "embedding_checkpoints"
+        full_model_dir.mkdir(parents=True, exist_ok=True)
+        embedding_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_embedding_checkpoint(self, path_name: str = "embedding_backbone.pt") -> None:
-        save_dir = Path("artifacts") / "embedding_checkpoints"
-        save_dir.mkdir(parents=True, exist_ok=True)
+        full_model_path = full_model_dir / full_model_path_name
+        embedding_path = embedding_dir / embedding_path_name
 
-        save_path = save_dir / path_name
-
+        torch.save(checkpoint_data, full_model_path)
         torch.save(
             {
                 "backbone_state_dict": self.backbone.state_dict(),
                 "embedding_dim": self.embedding_dim,
             },
-            save_path,
+            embedding_path,
         )
+        return full_model_path, embedding_path

@@ -3,21 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SupervisedContrastiveLoss(nn.Module):
-    def __init__(self, temperature: float = 0.07) -> None:
+    def __init__(self, temperature: float = 0.2) -> None:
         super().__init__()
         self.temperature = temperature
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        if features.ndim != 2:
-            raise ValueError(f"Expected features with shape [2N, D], got {tuple(features.shape)}.")
-        if labels.ndim != 1:
-            raise ValueError(f"Expected labels with shape [2N], got {tuple(labels.shape)}.")
-        if features.shape[0] != labels.shape[0]:
-            raise ValueError(
-                f"Features and labels must have matching first dimension, got "
-                f"{features.shape[0]} and {labels.shape[0]}."
-            )
-
         features = F.normalize(features, dim=1)
         logits = features @ features.T
         logits = logits / self.temperature

@@ -28,8 +28,8 @@ run_step() {
 
 source venv_ssl_proj/bin/activate
 log_step "Pipeline started"
-python3 main_utils.py
-python3 main.py
+# python3 main_utils.py
+# python3 main.py
 run_step 02_extract_embeddings.py
 run_step 03_04_build_gallery_and_validation.py
 run_step 05_calibrate_rejection_thresholds.py

@@ -3,6 +3,7 @@ import os
 import random
 import shutil
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -74,22 +75,45 @@ def set_seed(seed: int = 42) -> None:
     torch.use_deterministic_algorithms(True)
 
 
+class HarryPlotter:
+    def __init__(
+        self,
+        save_name: str = "simclr_loss.png",
+        artifacts_dir: str | Path = "artifacts",
+        title: str = "SimCLR training loss",
+    ) -> None:
+        self.artifacts_dir = Path(artifacts_dir)
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.save_path = self.artifacts_dir / save_name
+        self.title = title
+        self.train_losses: list[float] = []
+
+    def update(self, loss: float) -> Path:
+        self.train_losses.append(float(loss))
+        self.save()
+        return self.save_path
+
+    def extend(self, losses: Sequence[float]) -> Path:
+        self.train_losses.extend(float(loss) for loss in losses)
+        self.save()
+        return self.save_path
+
+    def save(self) -> Path:
+        plt.figure(figsize=(8, 5))
+        plt.plot(self.train_losses, label="Train loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Supervised contrastive loss")
+        plt.title(self.title)
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(self.save_path)
+        plt.close()
+        return self.save_path
+
+
 def plot_loss(train_losses, save_name="simclr_loss.png"):
-    artifacts_dir = Path("artifacts")
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-    save_path = artifacts_dir / save_name
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(train_losses, label="Train loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Supervised contrastive loss")
-    plt.title("SimCLR training loss")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+    return HarryPlotter(save_name=save_name).extend(train_losses)
 
 
 def _log_kaggle_auth_state() -> None:

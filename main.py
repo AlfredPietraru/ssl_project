@@ -7,177 +7,84 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from animal_dataset import (
-    build_simclr_data,
+    build_simclr_train_val_by_identity,
     build_transformations,
-    training_transform,
-    testing_transform
 )
+
+import csv
+from pathlib import Path
+from trainer import EmbeddingModelTrainer
+
 from config import CFG
 from model import ContrastiveEmbeddingModel
-from loss_functions import SupervisedContrastiveLoss
-from main_utils import (
-    plot_loss,
-    set_seed
-)
-
-
-
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SIMCLR")
 
 
-def train_one_epoch(
-    epoch: int,
-    config: CFG,
-    model: ContrastiveEmbeddingModel,
-    train_loader,
-    gpu_transform,
-    loss_fn: SupervisedContrastiveLoss,
-    optimizer: torch.optim.Optimizer,
-    scaler: torch.GradScaler
-) -> float:
-    model.train()
 
-    epoch_loss = 0.0
-    valid_batches = 0
-    start_time = time.perf_counter()
-
-    for batch_idx, (images, labels) in enumerate(train_loader, start=1):
-        images = images.to(config.device, non_blocking=True)
-        labels = labels.to(config.device, non_blocking=True)
-
-        view_1 = gpu_transform(images)
-        view_2 = gpu_transform(images)
-
-        simclr_images = torch.cat([view_1, view_2], dim=0)
-        simclr_labels = torch.cat([labels, labels], dim=0)
-
-        optimizer.zero_grad(set_to_none=True)
-
-        with torch.autocast("cuda", enabled=(config.device.type == "cuda")):
-            projections = model(simclr_images)
-
-            if isinstance(projections, tuple):
-                projections = projections[-1]
-
-            loss = loss_fn(projections, simclr_labels)
-
-        if not torch.isfinite(loss):
-            logger.warning("Skipping non-finite loss at batch %d: %s", batch_idx, loss.item())
-            continue
-
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        scaler.step(optimizer)
-        scaler.update()
-
-        epoch_loss += float(loss.detach().cpu())
-        valid_batches += 1
-
-        if batch_idx % 20 == 0:
-            logger.info(
-                "Epoch %d | Batch %d/%d | Loss %.6f",
-                epoch,
-                batch_idx,
-                len(train_loader),
-                float(loss.detach().cpu()),
-            )
-
-    avg_loss = epoch_loss / max(valid_batches, 1)
-    elapsed = time.perf_counter() - start_time
-
-    logger.info(
-        "Epoch %d/%d finished | avg_loss=%.6f | time=%.1fs",
-        epoch,
-        config.epochs,
-        avg_loss,
-        elapsed,
-    )
-    return avg_loss
+METADATA_PATH = Path("data/metadata.csv")
 
 
-def train(
-    config: CFG,
-    model: ContrastiveEmbeddingModel,
-    train_loader,
-    gpu_transform,
-    loss_fn: SupervisedContrastiveLoss,
-    optimizer: torch.optim.Optimizer,
-) -> None:
-    train_losses = []
-    best_loss = float("inf")
-    scaler = torch.GradScaler("cuda", enabled=(config.device.type == "cuda"))
+def get_train_species(metadata_path: Path) -> list[str]:
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
-    for epoch in range(1, config.epochs + 1):
-        avg_loss = train_one_epoch(
-            epoch=epoch,
-            config=config,
-            model=model,
-            train_loader=train_loader,
-            gpu_transform=gpu_transform,
-            loss_fn=loss_fn,
-            optimizer=optimizer,
-            scaler=scaler
-        )
-        train_losses.append(avg_loss)
+    species = set()
+    with metadata_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row.get("split") != "train":
+                continue
 
-        plot_loss(train_losses, save_name="simclr_loss.png")
+            name = (row.get("species") or "").strip()
+            if name:
+                species.add(name)
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            model.save_full_checkpoint(
-                checkpoint_data={
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scaler_state_dict": scaler.state_dict(),
-                    "loss": avg_loss,
-                    "config": config.to_dict(),
-                }
-            )
-            model.save_embedding_checkpoint()
-            logger.info("Saved new best checkpoint with loss %.6f", best_loss)
+    return sorted(species)
 
 
+TRAIN_SPECIES = (
+    "lynx",
+    "salamander",
+    "loggerhead turtle",
+)
 
 def main(config: CFG) -> None:
-    train_dataset, eval_dataset, train_loader, test_loader = build_simclr_data(
-        config,
-        shuffle_training=True,
-        training_transform=training_transform,
-        testing_transform=testing_transform
-    )
-    gpu_transform = build_transformations(config)
-
-    model = ContrastiveEmbeddingModel(
-        projection_dim=config.projection_dim,
-        projection_hidden_dim=config.projection_hidden_dim,
-        dropout=config.projection_dropout,
-        allow_download=True,
-    ).to(config.device)
-
-    loss_fn = SupervisedContrastiveLoss(
-        temperature=config.temperature
-    ).to(config.device) 
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.lr,
-        weight_decay=config.weight_decay,
-    )
-
-    train(
+    animal = TRAIN_SPECIES[1] 
+    train_dataset, validation_dataset, train_loader, validation_loader = build_simclr_train_val_by_identity(
         config=config,
-        model=model,
-        train_loader=train_loader,
-        gpu_transform=gpu_transform,
-        loss_fn=loss_fn,
-        optimizer=optimizer
+        shuffle_training=True,
+        class_name=animal,
+        instances_per_identity=2,
+    )
+    logger.info(
+        "Built %s identity split | train_samples=%d | val_samples=%d | train_identities=%d | val_identities=%d",
+        animal,
+        len(train_dataset),
+        len(validation_dataset),
+        train_dataset.metadata["identity"].nunique(),
+        validation_dataset.metadata["identity"].nunique(),
     )
 
+    trainer_salamander = EmbeddingModelTrainer(
+        cfg=config,
+        train_loader=train_loader,
+        val_loader=validation_loader,
+        transform=build_transformations(config),
+    )
+    model: ContrastiveEmbeddingModel = trainer_salamander.train()
 
 if __name__ == "__main__":
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     config = CFG("config.yaml")
-    set_seed()
+    train_species = get_train_species(METADATA_PATH)
+
+    print("Species found in the train set:")
+    for species_name in train_species:
+        print(f"- {species_name}")
+
     main(config)
