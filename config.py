@@ -18,7 +18,12 @@ class CFG:
         self.lr = float(data["lr"])  # type: ignore[arg-type]
         self.weight_decay = float(data["weight_decay"])  # type: ignore[arg-type]
         self.temperature = float(data["temperature"])  # type: ignore[arg-type]
+        self.training_loss = str(data["training_loss"])
+        self.triplet_margin = float(data["triplet_margin"])  # type: ignore[arg-type]
+        self.triplet_identities_per_batch = int(data["triplet_identities_per_batch"])  # type: ignore[arg-type]
+        self.triplet_images_per_identity = int(data["triplet_images_per_identity"])  # type: ignore[arg-type]
         self.projection_dim = int(data["projection_dim"])  # type: ignore[arg-type]
+        self.cache_images_in_ram = bool(data["cache_images_in_ram"])
         self.projection_hidden_dim = int(data["projection_hidden_dim"])  # type: ignore[arg-type]
         self.projection_dropout = float(data["projection_dropout"])  # type: ignore[arg-type]
         self.checkpoint_dir = str(data["checkpoint_dir"])
@@ -56,7 +61,12 @@ class CFG:
             "lr": self.lr,
             "weight_decay": self.weight_decay,
             "temperature": self.temperature,
+            "training_loss": self.training_loss,
+            "triplet_margin": self.triplet_margin,
+            "triplet_identities_per_batch": self.triplet_identities_per_batch,
+            "triplet_images_per_identity": self.triplet_images_per_identity,
             "projection_dim": self.projection_dim,
+            "cache_images_in_ram": self.cache_images_in_ram,
             "projection_hidden_dim": self.projection_hidden_dim,
             "projection_dropout": self.projection_dropout,
             "checkpoint_dir": self.checkpoint_dir,
@@ -110,7 +120,12 @@ class CFG:
             "lr",
             "weight_decay",
             "temperature",
+            "training_loss",
+            "triplet_margin",
+            "triplet_identities_per_batch",
+            "triplet_images_per_identity",
             "projection_dim",
+            "cache_images_in_ram",
             "projection_hidden_dim",
             "projection_dropout",
             "checkpoint_dir",

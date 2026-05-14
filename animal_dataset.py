@@ -14,6 +14,7 @@ import logging
 import time
 from config import CFG
 import warnings
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
@@ -157,6 +158,7 @@ class AnimalSimCLRDataset(Dataset):
             self.metadata = self._prepare_external_metadata(metadata=metadata)
         self.dataset = self.dataset.get_subset(self.metadata["_source_index"].tolist())
         self.dataset.set_transform(transform)
+        self.cached_images = self._cache_images_in_ram(cache_num_workers) if cache_images_in_ram else None
         identities = sorted(self.metadata["identity"].astype(str).unique())
         self.identity_to_label = {
             identity: label for label, identity in enumerate(identities)
@@ -212,10 +214,102 @@ class AnimalSimCLRDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index: int):
-        image, _ = self.dataset[index]
+        if self.cached_images is None:
+            image, _ = self.dataset[index]
+        else:
+            image = self.cached_images[index].clone()
         identity = self.metadata.iloc[index]["identity"]
         label = -1 if pd.isna(identity) else self.identity_to_label[str(identity)]
         return image, torch.tensor(label, dtype=torch.long)
+
+    def _cache_images_in_ram(self, num_workers: int = 0) -> torch.Tensor:
+        logger.info("Caching %s %s images in RAM", len(self.dataset), self.split)
+        loader = DataLoader(
+            self.dataset,
+            batch_size=64,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=False,
+            persistent_workers=False,
+        )
+
+        batches: list[torch.Tensor] = []
+        for batch in tqdm(
+            loader,
+            desc=f"cache {self.split}",
+            leave=False,
+        ):
+            if isinstance(batch, dict):
+                images = batch["image"]
+            else:
+                images = batch[0]
+            if not isinstance(images, torch.Tensor):
+                images = torch.stack([T.ToTensor()(image) for image in images], dim=0)
+            batches.append(images.cpu())
+
+        cached = torch.cat(batches, dim=0).contiguous()
+        gib = cached.numel() * cached.element_size() / (1024 ** 3)
+        logger.info(
+            "Cached %s %s images in RAM | shape=%s | size=%.2f GiB",
+            len(self.dataset),
+            self.split,
+            tuple(cached.shape),
+            gib,
+        )
+        return cached
+
+
+class IdentityBalancedBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: AnimalSimCLRDataset,
+        identities_per_batch: int,
+        images_per_identity: int,
+        seed: int = 42,
+    ) -> None:
+        self.identities_per_batch = int(identities_per_batch)
+        self.images_per_identity = int(images_per_identity)
+        if self.identities_per_batch <= 0 or self.images_per_identity <= 1:
+            raise ValueError("Triplet batches need positive identities_per_batch and images_per_identity > 1.")
+
+        label_to_indices: dict[int, list[int]] = {}
+        for index in range(len(dataset)):
+            identity = dataset.metadata.iloc[index]["identity"]
+            if pd.isna(identity) or str(identity).strip().lower() == "unknown":
+                continue
+            label = dataset.identity_to_label[str(identity)]
+            label_to_indices.setdefault(label, []).append(index)
+
+        self.label_to_indices = {
+            label: indices
+            for label, indices in label_to_indices.items()
+            if len(indices) >= 2
+        }
+        self.labels = np.array(sorted(self.label_to_indices), dtype=np.int64)
+        if len(self.labels) < self.identities_per_batch:
+            raise ValueError(
+                "Not enough identities with at least two images for balanced triplet batches: "
+                f"{len(self.labels)} available, {self.identities_per_batch} requested."
+            )
+
+        self.batch_size = self.identities_per_batch * self.images_per_identity
+        self.num_batches = max(1, sum(len(indices) for indices in self.label_to_indices.values()) // self.batch_size)
+        self.rng = np.random.default_rng(seed)
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            selected_labels = self.rng.choice(self.labels, size=self.identities_per_batch, replace=False)
+            batch: list[int] = []
+            for label in selected_labels:
+                indices = self.label_to_indices[int(label)]
+                replace = len(indices) < self.images_per_identity
+                sampled = self.rng.choice(indices, size=self.images_per_identity, replace=replace)
+                batch.extend(int(index) for index in sampled)
+            self.rng.shuffle(batch)
+            yield batch
+
+    def __len__(self) -> int:
+        return self.num_batches
 
 
 class AnimalTrainClassDataset(AnimalSimCLRDataset):
@@ -302,10 +396,12 @@ def build_simclr_data(
         config : CFG, 
         shuffle_training : bool = True, 
         training_transform = None,
-        testing_transform = None
+        testing_transform = None,
+        build_eval: bool = True,
     ) -> tuple[AnimalSimCLRDataset, AnimalSimCLRDataset, DataLoader, DataLoader]:
     batch_size = config.batch_size
-    num_workers = config.num_workers
+    cache_num_workers = config.num_workers
+    loader_num_workers = 0 if config.cache_images_in_ram else config.num_workers
 
     train_dataset = AnimalSimCLRDataset(
         root=config.root,
@@ -314,15 +410,21 @@ def build_simclr_data(
         max_samples=config.max_samples,
         drop_unknown_identity=False,
         transform=training_transform or build_cpu_training_transform(config.image_size),
+        cache_images_in_ram=config.cache_images_in_ram,
+        cache_num_workers=cache_num_workers,
     )
-    eval_dataset = AnimalSimCLRDataset(
-        root=config.root,
-        image_size=config.image_size,
-        split="test",
-        max_samples=config.max_samples,
-        drop_unknown_identity=False,
-        transform=testing_transform or build_cpu_testing_transform(config.image_size)
-    )
+    eval_dataset = None
+    if build_eval:
+        eval_dataset = AnimalSimCLRDataset(
+            root=config.root,
+            image_size=config.image_size,
+            split="test",
+            max_samples=config.max_samples,
+            drop_unknown_identity=False,
+            transform=testing_transform or build_cpu_testing_transform(config.image_size),
+            cache_images_in_ram=config.cache_images_in_ram,
+            cache_num_workers=cache_num_workers,
+        )
 
     train_loader = DataLoader(
         train_dataset,

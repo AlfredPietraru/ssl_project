@@ -35,18 +35,49 @@ That means the final system needs both:
 
 ## 3. Recommended high-level pipeline
 
-The practical system should be built in this order:
+The competition is evaluated with Adjusted Rand Index (ARI), so the exact
+numeric suffix in a cluster label is arbitrary. What matters is whether images
+of the same individual share one predicted cluster and images of different
+individuals are not merged.
+
+The current practical baseline is the direct clustering path:
 
 1. train or fine-tune the embedding backbone with contrastive learning
 2. freeze the backbone and use it for embedding extraction
-3. build a gallery of known identities from training images
-4. create a validation protocol that simulates unseen identities
-5. learn decision thresholds for known-vs-unknown rejection
-6. run nearest-neighbor matching for test images
-7. reject low-confidence matches as unknown
-8. cluster rejected samples into new identities
-9. optionally refine labels with self-training or incremental enrollment
-10. export final identity / cluster assignments
+3. cluster all test embeddings per dataset
+4. export `image_id,cluster`
+5. run train-set diagnostics to check embedding quality
+
+The older lookup + discovery path is still useful for experiments, but it is
+more fragile because early known-vs-unknown decisions can split or merge true
+test identities.
+
+Current RunPod steps:
+
+1. `02_extract_embeddings.py`
+2. `03_cluster_test_embeddings.py`
+3. `11_verify_train_clustering.py`
+
+Primary submission artifact:
+
+- `artifacts/final/test_clustering_submission.csv`
+
+Diagnostic artifacts:
+
+- `artifacts/final/test_clustering_report.txt`
+- `artifacts/final/test_clustering_summary.json`
+- `artifacts/final/train_verification_report.txt`
+- `artifacts/final/train_verification_summary.json`
+
+Experimental lookup + discovery scripts:
+
+1. `03_04_build_gallery_and_validation.py`
+2. `05_calibrate_rejection_thresholds.py`
+3. `06_run_nearest_neighbor_matching.py`
+4. `07_reject_low_confidence_matches.py`
+5. `08_cluster_rejected_unknowns.py`
+6. `09_refine_with_incremental_enrollment.py`
+7. `10_export_final_assignments.py`
 
 ## 4. Step-by-step implementation plan
 

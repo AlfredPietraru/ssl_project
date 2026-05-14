@@ -6,6 +6,28 @@ handle both known and unknown individuals
 Detailed next-step workflow after contrastive training:
 [`docs/instance_identification_system.md`](/home/alf/ssl/docs/instance_identification_system.md)
 
+## Current runnable pipeline
+
+The active RunPod pipeline is:
+
+```bash
+./runpod_run.sh
+```
+
+It writes all terminal output to `logs.txt` and currently runs:
+
+1. `02_extract_embeddings.py` - extract train/test embeddings from the fine-tuned backbone.
+2. `03_cluster_test_embeddings.py` - cluster all test images per dataset and write an ARI-style submission.
+3. `11_verify_train_clustering.py` - diagnostic train-set nearest-neighbor verification.
+
+Main submission artifact:
+
+```text
+artifacts/final/test_clustering_submission.csv
+```
+
+The older lookup + discovery scripts (`03_04` through `10`) are still kept for experiments, but the direct clustering path is the simpler baseline for ARI because ARI evaluates grouping consistency rather than exact identity names.
+
 
 Feature extraction: -> pre-trained model: MegaDescriptor
 competition follows discovery setting -> many test individuals not present in training, assign new images to previously unseen identities
