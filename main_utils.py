@@ -87,9 +87,11 @@ class HarryPlotter:
         self.save_path = self.artifacts_dir / save_name
         self.title = title
         self.train_losses: list[float] = []
+        self.validation_losses: list[float] = []
 
-    def update(self, loss: float) -> Path:
-        self.train_losses.append(float(loss))
+    def update(self, train_loss: float, validation_loss: float) -> Path:
+        self.train_losses.append(float(train_loss))
+        self.validation_losses.append(float(validation_loss))
         self.save()
         return self.save_path
 
@@ -100,7 +102,10 @@ class HarryPlotter:
 
     def save(self) -> Path:
         plt.figure(figsize=(8, 5))
-        plt.plot(self.train_losses, label="Train loss")
+        epochs = range(1, len(self.train_losses) + 1)
+        plt.plot(epochs, self.train_losses, label="Train loss")
+        if self.validation_losses:
+            plt.plot(epochs, self.validation_losses, label="Validation loss")
         plt.xlabel("Epoch")
         plt.ylabel("Supervised contrastive loss")
         plt.title(self.title)

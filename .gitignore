@@ -12,3 +12,7 @@ data_embeddings
 venv
 .agents
 logs.txt
+images
+metadata.csv
+metadata.sqlite
+

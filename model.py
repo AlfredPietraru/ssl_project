@@ -6,8 +6,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from animal_dataset import build_simclr_data
-
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MODEL")
@@ -71,13 +69,14 @@ def _load_backbone_weights(model: nn.Module, state_dict: dict[str, torch.Tensor]
 
 
 def load_mega_descriptor_model_feature_extraction(
-    weights_path: Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
+    weights_path: str | Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
     allow_download: bool = False,
 ) -> nn.Module:
     import timm
     from huggingface_hub import hf_hub_download
 
     try:
+        weights_path = Path(weights_path)
         if not allow_download:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -151,11 +150,15 @@ class ContrastiveEmbeddingModel(nn.Module):
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
         dropout: float = 0.2,
-        allow_download=False
+        allow_download: bool = False,
+        backbone_weights_path: str | Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
     ):
         super().__init__()
 
-        self.backbone = load_mega_descriptor_model_feature_extraction(allow_download=allow_download)
+        self.backbone = load_mega_descriptor_model_feature_extraction(
+            weights_path=backbone_weights_path,
+            allow_download=allow_download,
+        )
         self.embedding_dim = int(self.backbone.num_features)  # type: ignore[attr-defined]
         self.projection_head = nn.Sequential(
             nn.Linear(self.embedding_dim, projection_hidden_dim),
