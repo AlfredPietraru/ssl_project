@@ -7,7 +7,7 @@ from typing import Any
 import json
 import logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("__name__")
+logger = logging.getLogger("data_fetcher.py")
 
 
 class DataFetcher:
@@ -90,6 +90,7 @@ class DataFetcher:
         for row in val_rows:
             only_one_entry_val = only_one_entry_val + 1 if len(row["paths"]) == 1 else only_one_entry_val
         logger.warning(f"There are {only_one_entry_val} entities in val with 1 example.")
+        val_rows = list(filter(lambda x: len(x.get("paths", 0)) > 1, val_rows))
 
         return train_rows, val_rows
 

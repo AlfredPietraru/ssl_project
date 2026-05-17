@@ -20,13 +20,23 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 
 class EmbeddingModelTrainer:
-    def __init__(self, cfg : CFG, train_loader : DataLoader, val_loader : DataLoader,
-                 animal_name: str, model : ContrastiveEmbeddingModel) -> None:
+    def __init__(
+        self,
+        cfg: CFG,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        simple_train_loader: DataLoader,
+        simple_val_loader: DataLoader,
+        animal_name: str,
+        model: ContrastiveEmbeddingModel,
+    ) -> None:
         set_seed()
         self.logger = logging.getLogger("embedding_model_trainer")
         self.cfg = cfg
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.simple_train_loader = simple_train_loader
+        self.simple_val_loader = simple_val_loader
         self.animal_name = animal_name
         self.animal_slug = self.animal_name.strip().lower().replace(" ", "_")
         self.train_losses: list[float] = []
@@ -42,10 +52,15 @@ class EmbeddingModelTrainer:
         self.loss_fn = BatchHardTripletLoss().to(device=cfg.device)
 
 
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = torch.optim.NAdam(
             model.parameters(),  # type: ignore
             lr=self.cfg.lr,
             weight_decay=self.cfg.weight_decay,
+        )
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=self.cfg.epochs,
+            eta_min=max(self.cfg.lr * 0.1, 1e-7),
         )
         self.plotter = HarryPlotter(save_name="simclr_loss.png")
 
@@ -53,11 +68,13 @@ class EmbeddingModelTrainer:
         best_loss = float("inf")
         best_epoch = 0
         epochs_without_improvement = 0
+        best_checkpoint_path: Path | None = None
         self.model.train()
 
         for epoch in range(1, self.cfg.epochs + 1):
             train_loss, train_elapsed = self._train_one_epoch(epoch)
-            validation_loss, validation_elapsed, recall_at_1, recall_at_5 = self._validate_one_epoch(epoch)
+            validation_loss, validation_elapsed = self._validate_one_epoch(epoch)
+            recall_at_1, recall_at_5, recall_elapsed = self._evaluate_simple_validation_recall()
             self.train_losses.append(train_loss)
             self.validation_losses.append(validation_loss)
             self.validation_recall_at_1.append(recall_at_1)
@@ -74,24 +91,32 @@ class EmbeddingModelTrainer:
                 recall_at_1,
                 recall_at_5,
                 train_elapsed,
-                validation_elapsed,
+                validation_elapsed + recall_elapsed,
             )
             self.plotter.update(train_loss, validation_loss)
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            self.logger.info("Epoch %d | lr=%.8f", epoch, current_lr)
 
-            if validation_loss < best_loss:
+            improvement_margin = best_loss - validation_loss
+            if improvement_margin > self.cfg.early_stopping_min_delta:
                 best_loss = validation_loss
                 best_epoch = epoch
                 epochs_without_improvement = 0
-                self.model.save_checkpoints(
+                best_checkpoint_path = self.model.save_checkpoints(
                     full_model_path_name=f"contrastive_model_{self.animal_slug}.pt")
                 self.logger.info("Saved new best checkpoint with loss %.6f", best_loss)
             else:
                 epochs_without_improvement += 1
                 self.logger.info(
-                    "No validation improvement for %d epoch(s) | best_val_loss=%.6f at epoch %d",
+                    (
+                        "No validation improvement for %d epoch(s) | best_val_loss=%.6f at epoch %d | "
+                        "current_delta=%.6f | required_delta=%.6f"
+                    ),
                     epochs_without_improvement,
                     best_loss,
                     best_epoch,
+                    improvement_margin,
+                    self.cfg.early_stopping_min_delta,
                 )
                 if epochs_without_improvement >= self.cfg.early_stopping_patience:
                     self.logger.info(
@@ -101,6 +126,17 @@ class EmbeddingModelTrainer:
                         best_epoch,
                     )
                     break
+            self.scheduler.step()
+
+        if best_checkpoint_path is not None and best_checkpoint_path.exists():
+            self.model.load_state_dict(
+                torch.load(best_checkpoint_path, map_location=self.cfg.device)
+            )
+            self.logger.info(
+                "Restored best checkpoint from epoch %d with validation loss %.6f",
+                best_epoch,
+                best_loss,
+            )
         self.model = self.model.eval()
         return self.model
 
@@ -219,13 +255,11 @@ class EmbeddingModelTrainer:
 
         return torch.cat(collected_embeddings, dim=0), torch.cat(collected_labels, dim=0)
 
-    def _validate_one_epoch(self, epoch : int) -> tuple[float, float, float, float]:
+    def _validate_one_epoch(self, epoch : int) -> tuple[float, float]:
         self.model.eval()
         epoch_loss = 0.0
         valid_batches = 0
         start_time = time.perf_counter()
-        collected_embeddings: list[torch.Tensor] = []
-        collected_labels: list[torch.Tensor] = []
         diagnostics_totals: dict[str, float] = {}
 
         with torch.no_grad():
@@ -247,8 +281,6 @@ class EmbeddingModelTrainer:
 
                 epoch_loss += float(loss.detach().cpu())
                 valid_batches += 1
-                collected_embeddings.append(projections.detach().cpu())
-                collected_labels.append(labels.detach().cpu())
                 batch_diagnostics = self.loss_fn.diagnostics(projections.detach(), labels.detach())
                 for key, value in batch_diagnostics.items():
                     diagnostics_totals[key] = diagnostics_totals.get(key, 0.0) + value
@@ -281,12 +313,24 @@ class EmbeddingModelTrainer:
                 epoch,
                 diagnostics_text,
             )
-        if collected_embeddings:
-            all_embeddings = torch.cat(collected_embeddings, dim=0)
-            all_labels = torch.cat(collected_labels, dim=0)
-            recall_at_1 = self._compute_recall_at_k(all_embeddings, all_labels, k=1)
-            recall_at_5 = self._compute_recall_at_k(all_embeddings, all_labels, k=5)
-        else:
-            recall_at_1 = 0.0
-            recall_at_5 = 0.0
-        return avg_loss, elapsed, recall_at_1, recall_at_5
+        return avg_loss, elapsed
+
+    def _evaluate_simple_validation_recall(self) -> tuple[float, float, float]:
+        start_time = time.perf_counter()
+        embeddings, labels = self.get_embeddings(
+            trained_model=self.model,
+            loader=self.simple_val_loader,
+        )
+        if embeddings.ndim != 2 or labels.ndim != 1 or embeddings.shape[0] == 0:
+            return 0.0, 0.0, time.perf_counter() - start_time
+
+        recall_at_1 = self._compute_recall_at_k(embeddings, labels, k=1)
+        recall_at_5 = self._compute_recall_at_k(embeddings, labels, k=5)
+        elapsed = time.perf_counter() - start_time
+        self.logger.info(
+            "Simple validation recall | samples=%d | recall@1=%.4f | recall@5=%.4f",
+            embeddings.shape[0],
+            recall_at_1,
+            recall_at_5,
+        )
+        return recall_at_1, recall_at_5, elapsed

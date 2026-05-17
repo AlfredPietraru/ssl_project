@@ -11,8 +11,8 @@ from animal_dataset import (
     build_simple_train_val_datasets_and_loaders
 )
 from transformations import (
-    training_transform,
-    testing_transform
+    build_cpu_testing_transform,
+    build_cpu_training_transform,
 )
 
 from cluster_and_compare import ClusterAndCompare
@@ -65,8 +65,15 @@ def main(config: CFG) -> None:
         train_metadata=train_metadata,
         val_metadata=val_metadata,
         cfg=config,
-        train_transform=training_transform,
-        val_transform=testing_transform,
+        train_transform=build_cpu_training_transform(config.image_size),
+        val_transform=build_cpu_testing_transform(config.image_size),
+    )
+    simple_train_dt, simple_val_dt, simple_train_loader, simple_val_loader = build_simple_train_val_datasets_and_loaders(
+        train_metadata=train_metadata,
+        val_metadata=val_metadata,
+        cfg=config,
+        train_transform=build_cpu_testing_transform(config.image_size),
+        val_transform=build_cpu_testing_transform(config.image_size),
     )
     logger.info(
         "Built %s identity split | train_samples=%d | val_samples=%d | train_identities=%d | val_identities=%d",
@@ -77,28 +84,19 @@ def main(config: CFG) -> None:
         val_identities,
     )
 
-    model = ContrastiveEmbeddingModel().to(config.device)
-    # model.load_state_dict(torch.load(f"artifacts/full_model_checkpoints/contrastive_model_{animal}.pt", map_location=config.device))
-
     trainer_salamander = EmbeddingModelTrainer(
         cfg=config,
         train_loader=train_loader,
         val_loader=val_loader,
+        simple_train_loader=simple_train_loader,
+        simple_val_loader=simple_val_loader,
         animal_name=animal,
-        model=model
+        model=ContrastiveEmbeddingModel().to(config.device)
     )
-    
-    model = trainer_salamander.train()
-    train_dt, val_dt, train_loader, val_loader = build_simple_train_val_datasets_and_loaders(
-        train_metadata=train_metadata,
-        val_metadata=val_metadata,
-        cfg=config,
-        train_transform=training_transform,
-        val_transform=testing_transform,
-    )
+    best_model = trainer_salamander.train()
 
-    embeddings, labels = trainer_salamander.get_embeddings(trained_model=model,
-                                                            loader=val_loader)
+    embeddings, labels = trainer_salamander.get_embeddings(trained_model=best_model,
+                                                            loader=simple_val_loader)
     logger.info("Validation clustering | embeddings_shape=%s", tuple(embeddings.shape))
     comparator = ClusterAndCompare(
         embeddings=embeddings,
@@ -108,8 +106,8 @@ def main(config: CFG) -> None:
     comparator.sweep_eps(min_samples=2)
 
     logger.info("Try for training.")
-    embeddings, labels = trainer_salamander.get_embeddings(trained_model=model,
-                                                            loader=train_loader)
+    embeddings, labels = trainer_salamander.get_embeddings(trained_model=best_model,
+                                                            loader=simple_train_loader)
     logger.info("Train clustering | embeddings_shape=%s", tuple(embeddings.shape))
     comparator = ClusterAndCompare(
         embeddings=embeddings,

@@ -27,6 +27,3 @@ def build_cpu_testing_transform(image_size: int) -> T.Compose:
         T.ToTensor(),
         T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ])
-
-training_transform = build_cpu_training_transform(288)
-testing_transform = build_cpu_testing_transform(288)
