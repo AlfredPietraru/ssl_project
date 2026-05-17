@@ -8,6 +8,10 @@ import logging
 from typing import Any
 from config import CFG
 import warnings
+from transformations import (
+    build_cpu_testing_transform,
+    build_cpu_training_transform,
+)
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
@@ -21,35 +25,38 @@ class MyAnimalDatasetPK(Dataset):
         cfg: CFG,
         cache_all_images: bool = False,
         transform=None,
+        light_transform=None,
     ):
         super().__init__()
-        self.metatada = metadata
+        self.metadata = metadata
         self.cfg = cfg
         self.transform = transform or T.ToTensor()
-        self.identity_to_label = {
-            str(item["identity"]): idx for idx, item in enumerate(self.metatada)
-        }
+        self.light_transform = light_transform or build_cpu_testing_transform(self.cfg.image_size)
         self.image_cache: dict[str, Image.Image] = {}
 
-        if len(self.metatada) == 0:
+        if len(self.metadata) == 0:
             raise ValueError("The metadata does not exist.")
-        lm = self.metatada[0]
+        lm = self.metadata[0]
         if lm.get("identity") is None or lm.get("paths") is None:
             raise ValueError("The metadata format is not good.")
+        if not isinstance(lm["identity"], int):
+            raise ValueError("Expected metadata identities to be integers.")
+        if not isinstance(lm["paths"], list):
+            raise ValueError("Expected metadata paths to be a list of image paths.")
 
         self.cache_all_images = cache_all_images
         if cache_all_images:
-            for item in self.metatada:
+            for item in self.metadata:
                 for path in item["paths"]:
                     if path not in self.image_cache:
                         self.image_cache[path] = Image.open(path).convert("RGB")
         
     def __len__(self):
-        return len(self.metatada)
+        return len(self.metadata)
 
     def __getitem__(self, index):
-        local_metadata = self.metatada[index]
-        identity = str(local_metadata["identity"])
+        local_metadata = self.metadata[index]
+        identity = local_metadata["identity"]
         paths = list(local_metadata["paths"])
         instances_per_identity = int(self.cfg.instances_per_identity)
 
@@ -69,12 +76,13 @@ class MyAnimalDatasetPK(Dataset):
                 image = self.image_cache[path].copy()
             else:
                 image = Image.open(path).convert("RGB")
-            transformed_image = self.transform(image)
-            images.append(transformed_image)
+            augmented_image = self.transform(image.copy())
+            light_image = self.light_transform(image.copy())
+            images.append(augmented_image)
+            images.append(light_image)
 
         stacked_images = torch.stack(images, dim=0)
-        label = self.identity_to_label[identity]
-        return stacked_images, torch.tensor(label, dtype=torch.long)
+        return stacked_images, torch.tensor(identity, dtype=torch.long)
     
 
 class MyAnimalDatasetSimple(Dataset):
@@ -86,26 +94,26 @@ class MyAnimalDatasetSimple(Dataset):
         transform=None,
     ):
         super().__init__()
-        self.metatada = metadata
+        self.metadata = metadata
         self.cfg = cfg
         self.transform = transform or T.ToTensor()
         self.image_cache: dict[str, Image.Image] = {}
 
-        if len(self.metatada) == 0:
+        if len(self.metadata) == 0:
             raise ValueError("The metadata does not exist.")
-        lm = self.metatada[0]
+        lm = self.metadata[0]
         if lm.get("identity") is None or lm.get("paths") is None:
             raise ValueError("The metadata format is not good.")
+        if not isinstance(lm["identity"], int):
+            raise ValueError("Expected metadata identities to be integers.")
+        if not isinstance(lm["paths"], list):
+            raise ValueError("Expected metadata paths to be a list of image paths.")
 
-        self.identity_to_label = {
-            str(item["identity"]): idx for idx, item in enumerate(self.metatada)
-        }
         self.flat_entries: list[tuple[str, int]] = []
-        for item in self.metatada:
-            identity = str(item["identity"])
-            label = self.identity_to_label[identity]
+        for item in self.metadata:
+            identity = item["identity"]
             for path in item["paths"]:
-                self.flat_entries.append((str(path), label))
+                self.flat_entries.append((str(path), identity))
 
         self.cache_all_images = cache_all_images
         if cache_all_images:
@@ -140,12 +148,14 @@ def build_pk_train_val_datasets_and_loaders(
         cfg=cfg,
         cache_all_images=cache_all_images,
         transform=train_transform or T.ToTensor(),
+        light_transform=val_transform or build_cpu_testing_transform(cfg.image_size),
     )
     val_dataset = MyAnimalDatasetPK(
         metadata=val_metadata,
         cfg=cfg,
         cache_all_images=cache_all_images,
         transform=val_transform or T.ToTensor(),
+        light_transform=val_transform or build_cpu_testing_transform(cfg.image_size),
     )
     def _pk_collate_fn(batch: list[tuple[torch.Tensor, 
                                          torch.Tensor]]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -225,4 +235,3 @@ def build_simple_train_val_datasets_and_loaders(
         **loader_kwargs,
     )
     return train_dataset, val_dataset, train_loader, val_loader
-

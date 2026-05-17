@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from typing import Optional
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
@@ -69,29 +70,55 @@ def _load_backbone_weights(model: nn.Module, state_dict: dict[str, torch.Tensor]
 
 
 def load_mega_descriptor_model_feature_extraction(
-    weights_path: str | Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
-    allow_download: bool = False,
+    weights_path: Optional[str] | Optional[Path],
 ) -> nn.Module:
     import timm
     from huggingface_hub import hf_hub_download
 
     try:
-        weights_path = Path(weights_path)
-        if not allow_download:
+        previous_hf_offline = os.environ.get("HF_HUB_OFFLINE")
+        previous_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
+
+        try:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            model = timm.create_model(
+                MEGA_DESCRIPTOR_MODEL_ID,
+                pretrained=False,
+            )
+        except Exception:
+            if previous_hf_offline is None:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["HF_HUB_OFFLINE"] = previous_hf_offline
+            if previous_transformers_offline is None:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            else:
+                os.environ["TRANSFORMERS_OFFLINE"] = previous_transformers_offline
 
-        model = timm.create_model(
-            MEGA_DESCRIPTOR_MODEL_ID,
-            pretrained=False,
-        )
+            model = timm.create_model(
+                MEGA_DESCRIPTOR_MODEL_ID,
+                pretrained=False,
+            )
+        finally:
+            if previous_hf_offline is None:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["HF_HUB_OFFLINE"] = previous_hf_offline
+            if previous_transformers_offline is None:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            else:
+                os.environ["TRANSFORMERS_OFFLINE"] = previous_transformers_offline
 
-        if weights_path.exists():
+        weights_path = Path(weights_path) if weights_path is not None else None
+        if weights_path is not None:
+            if not weights_path.exists():
+                raise FileNotFoundError(f"Backbone weights not found at: {weights_path}")
             checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
             state_dict = _extract_backbone_state_dict(checkpoint)
             _load_backbone_weights(model, state_dict)
             logger.info("Loaded %s from local weights: %s", MEGA_DESCRIPTOR_MODEL_ID, weights_path)
-        elif allow_download:
+        else:
             logger.info("Downloading %s from HuggingFace...", MEGA_DESCRIPTOR_MODEL_ID)
             repo_id = MEGA_DESCRIPTOR_MODEL_ID.removeprefix("hf-hub:")
             cached_checkpoint = hf_hub_download(
@@ -101,15 +128,6 @@ def load_mega_descriptor_model_feature_extraction(
             checkpoint = torch.load(cached_checkpoint, map_location="cpu", weights_only=False)
             state_dict = _extract_backbone_state_dict(checkpoint)
             _load_backbone_weights(model, state_dict)
-            weights_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), weights_path)
-            logger.info("Saved model locally at %s", weights_path)
-        else:
-            raise FileNotFoundError(
-                "Local MegaDescriptor weights were not found at "
-                f"'{weights_path}'. Download them once manually or call this loader "
-                "with allow_download=True during setup."
-            )
 
         model.train()
         return model
@@ -122,16 +140,13 @@ def load_mega_descriptor_model_feature_extraction(
 def load_embedding_backbone_checkpoint(
     checkpoint_path: str | Path = EMBEDDING_CHECKPOINT_PATH,
     device: str | torch.device = "cpu",
-    allow_download: bool = False,
     eval_mode: bool = True,
 ) -> nn.Module:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Embedding checkpoint not found: '{checkpoint_path}'")
 
-    model = load_mega_descriptor_model_feature_extraction(
-        allow_download=allow_download,
-    )
+    model = load_mega_descriptor_model_feature_extraction()
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = _extract_backbone_state_dict(checkpoint)
 
@@ -145,65 +160,21 @@ def load_embedding_backbone_checkpoint(
 
 
 class ContrastiveEmbeddingModel(nn.Module):
-    def __init__(
-        self,
-        projection_dim: int = 256,
-        projection_hidden_dim: int = 512,
-        dropout: float = 0.2,
-        allow_download: bool = False,
-        backbone_weights_path: str | Path = MEGA_DESCRIPTOR_LOCAL_WEIGHTS,
-    ):
+    def __init__(self, weights_path : str | None = None):
         super().__init__()
-
-        self.backbone = load_mega_descriptor_model_feature_extraction(
-            weights_path=backbone_weights_path,
-            allow_download=allow_download,
-        )
-        self.embedding_dim = int(self.backbone.num_features)  # type: ignore[attr-defined]
-        self.projection_head = nn.Sequential(
-            nn.Linear(self.embedding_dim, projection_hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(projection_hidden_dim, projection_dim),
-        )
+        self.backbone = load_mega_descriptor_model_feature_extraction(weights_path=weights_path)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        if hasattr(self.backbone, "forward_features"):
-            features = self.backbone.forward_features(images)  # type: ignore[attr-defined]
-            if hasattr(self.backbone, "forward_head"):
-                features = self.backbone.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
-        else:
-            features = self.backbone(images)
-        return self.projection_head(features)
+        features = self.backbone.forward_features(images)
+        return self.backbone.forward_head(features, pre_logits=True)
 
-    def extract_embeddings(self, images: torch.Tensor) -> torch.Tensor:
-        if hasattr(self.backbone, "forward_features"):
-            features = self.backbone.forward_features(images)  # type: ignore[attr-defined]
-            if hasattr(self.backbone, "forward_head"):
-                features = self.backbone.forward_head(features, pre_logits=True)  # type: ignore[attr-defined]
-            return features
-        return self.backbone(images)
 
     def save_checkpoints(
         self,
-        checkpoint_data: dict,
-        full_model_path_name: str = "contrastive_model.pt",
-        embedding_path_name: str = "embedding_backbone.pt",
-    ) -> tuple[Path, Path]:
+        full_model_path_name: str = "training_checkpoint.pt",
+    ) -> Path:
         full_model_dir = Path("artifacts") / "full_model_checkpoints"
-        embedding_dir = Path("artifacts") / "embedding_checkpoints"
         full_model_dir.mkdir(parents=True, exist_ok=True)
-        embedding_dir.mkdir(parents=True, exist_ok=True)
-
         full_model_path = full_model_dir / full_model_path_name
-        embedding_path = embedding_dir / embedding_path_name
-
-        torch.save(checkpoint_data, full_model_path)
-        torch.save(
-            {
-                "backbone_state_dict": self.backbone.state_dict(),
-                "embedding_dim": self.embedding_dim,
-            },
-            embedding_path,
-        )
-        return full_model_path, embedding_path
+        torch.save(self.state_dict(), full_model_path)
+        return full_model_path

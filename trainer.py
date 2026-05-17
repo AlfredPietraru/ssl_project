@@ -3,7 +3,10 @@ from config import CFG
 from torch.utils.data import DataLoader
 import torch
 import torch.nn.functional as F
-from loss_functions import SupervisedContrastiveLoss
+from loss_functions import (
+    SupervisedContrastiveLoss,
+    BatchHardTripletLoss
+)
 from main_utils import (
     HarryPlotter,
     set_seed
@@ -17,11 +20,8 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 
 class EmbeddingModelTrainer:
-    def __init__(self, cfg : CFG, transform : nn.Module,
-                 train_loader : DataLoader, val_loader : DataLoader,
-                 animal_name: str,
-                 backbone_weights_path: str | Path,
-                 allow_download: bool = False) -> None:
+    def __init__(self, cfg : CFG, train_loader : DataLoader, val_loader : DataLoader,
+                 animal_name: str, model : ContrastiveEmbeddingModel) -> None:
         set_seed()
         self.logger = logging.getLogger("embedding_model_trainer")
         self.cfg = cfg
@@ -33,22 +33,17 @@ class EmbeddingModelTrainer:
         self.validation_losses: list[float] = []
         self.validation_recall_at_1: list[float] = []
         self.validation_recall_at_5: list[float] = []
-
-        self.model = ContrastiveEmbeddingModel(
-            projection_dim=self.cfg.projection_dim,
-            projection_hidden_dim=self.cfg.projection_hidden_dim,
-            dropout=self.cfg.projection_dropout,
-            allow_download=allow_download,
-            backbone_weights_path=backbone_weights_path,
-        ).to(cfg.device)
+        self.model = model
+        
         self.scaler = torch.GradScaler("cuda", enabled=(self.cfg.device.type == "cuda"))
-        self.gpu_transform = transform
-        self.loss_fn = SupervisedContrastiveLoss(
-            temperature=cfg.temperature
-        ).to(cfg.device)
+        # self.loss_fn = SupervisedContrastiveLoss(
+        #     temperature=cfg.temperature
+        # ).to(cfg.device)
+        self.loss_fn = BatchHardTripletLoss().to(device=cfg.device)
+
 
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),  # type: ignore
+            model.parameters(),  # type: ignore
             lr=self.cfg.lr,
             weight_decay=self.cfg.weight_decay,
         )
@@ -88,21 +83,7 @@ class EmbeddingModelTrainer:
                 best_epoch = epoch
                 epochs_without_improvement = 0
                 self.model.save_checkpoints(
-                    checkpoint_data={
-                        "epoch": epoch,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                        "scaler_state_dict": self.scaler.state_dict(),
-                        "loss": validation_loss,
-                        "train_loss": train_loss,
-                        "validation_loss": validation_loss,
-                        "validation_recall_at_1": recall_at_1,
-                        "validation_recall_at_5": recall_at_5,
-                        "config": self.cfg.to_dict(),
-                    },
-                    full_model_path_name=f"contrastive_model_{self.animal_slug}.pt",
-                    embedding_path_name=f"embedding_backbone_{self.animal_slug}.pt",
-                )
+                    full_model_path_name=f"contrastive_model_{self.animal_slug}.pt")
                 self.logger.info("Saved new best checkpoint with loss %.6f", best_loss)
             else:
                 epochs_without_improvement += 1
@@ -127,6 +108,8 @@ class EmbeddingModelTrainer:
         epoch_loss = 0.0
         valid_batches = 0
         start_time = time.perf_counter()
+        diagnostics_totals: dict[str, float] = {}
+        last_batch_diagnostics: dict[str, float] = {}
 
         for batch_idx, (images, labels) in enumerate(self.train_loader, start=1):
             images = images.to(self.cfg.device, non_blocking=True)
@@ -134,7 +117,7 @@ class EmbeddingModelTrainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast("cuda", enabled=(self.cfg.device.type == "cuda")):
-                projections = self.model(self.gpu_transform(images))
+                projections = self.model(images)
                 loss = self.loss_fn(projections, labels)
 
             if not torch.isfinite(loss):
@@ -148,18 +131,38 @@ class EmbeddingModelTrainer:
 
             epoch_loss += float(loss.detach().cpu())
             valid_batches += 1
+            batch_diagnostics = self.loss_fn.diagnostics(projections.detach(), labels.detach())
+            last_batch_diagnostics = batch_diagnostics
+            for key, value in batch_diagnostics.items():
+                diagnostics_totals[key] = diagnostics_totals.get(key, 0.0) + value
 
             if batch_idx % 20 == 0:
+                diagnostics_text = " | ".join(
+                    f"{key}={value:.3f}" for key, value in batch_diagnostics.items()
+                )
                 self.logger.info(
-                    "Epoch %d | Batch %d/%d | Loss %.6f",
+                    "Epoch %d | Batch %d/%d | Loss %.6f | %s",
                     epoch,
                     batch_idx,
                     len(self.train_loader),
                     float(loss.detach().cpu()),
+                    diagnostics_text,
                 )
 
         avg_loss = epoch_loss / max(valid_batches, 1)
         elapsed = time.perf_counter() - start_time
+        if valid_batches > 0 and diagnostics_totals:
+            averaged_diagnostics = {
+                key: value / valid_batches for key, value in diagnostics_totals.items()
+            }
+            diagnostics_text = " | ".join(
+                f"{key}={value:.3f}" for key, value in averaged_diagnostics.items()
+            )
+            self.logger.info(
+                "Epoch %d | Train loss diagnostics | %s",
+                epoch,
+                diagnostics_text,
+            )
         return avg_loss, elapsed
 
     def _compute_recall_at_k(
@@ -193,17 +196,9 @@ class EmbeddingModelTrainer:
         return float(hits[eligible_mask].float().mean().item())
 
     def get_embeddings(
-        self,
-        split: str = "validation",
+        self, trained_model : ContrastiveEmbeddingModel, loader : DataLoader
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if split == "train":
-            loader = self.train_loader
-        elif split == "validation":
-            loader = self.val_loader
-        else:
-            raise ValueError("split must be either 'train' or 'validation'.")
-
-        self.model.eval()
+        trained_model.eval()
         collected_embeddings: list[torch.Tensor] = []
         collected_labels: list[torch.Tensor] = []
 
@@ -213,14 +208,14 @@ class EmbeddingModelTrainer:
                 labels = labels.to(self.cfg.device, non_blocking=True)
 
                 with torch.autocast("cuda", enabled=(self.cfg.device.type == "cuda")):
-                    projections = self.model(images)
+                    projections = trained_model(images)
 
                 collected_embeddings.append(projections.detach().cpu())
                 collected_labels.append(labels.detach().cpu())
 
-        self.model.train()
+        trained_model.train()
         if not collected_embeddings:
-            return torch.empty((0, self.cfg.projection_dim)), torch.empty((0,), dtype=torch.long)
+            return torch.empty((0,)), torch.empty((0,), dtype=torch.long)
 
         return torch.cat(collected_embeddings, dim=0), torch.cat(collected_labels, dim=0)
 
@@ -229,6 +224,9 @@ class EmbeddingModelTrainer:
         epoch_loss = 0.0
         valid_batches = 0
         start_time = time.perf_counter()
+        collected_embeddings: list[torch.Tensor] = []
+        collected_labels: list[torch.Tensor] = []
+        diagnostics_totals: dict[str, float] = {}
 
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(self.val_loader, start=1):
@@ -249,21 +247,43 @@ class EmbeddingModelTrainer:
 
                 epoch_loss += float(loss.detach().cpu())
                 valid_batches += 1
+                collected_embeddings.append(projections.detach().cpu())
+                collected_labels.append(labels.detach().cpu())
+                batch_diagnostics = self.loss_fn.diagnostics(projections.detach(), labels.detach())
+                for key, value in batch_diagnostics.items():
+                    diagnostics_totals[key] = diagnostics_totals.get(key, 0.0) + value
 
                 if batch_idx % 20 == 0:
+                    diagnostics_text = " | ".join(
+                        f"{key}={value:.3f}" for key, value in batch_diagnostics.items()
+                    )
                     self.logger.info(
-                        "Epoch %d | Validation Batch %d/%d | Loss %.6f",
+                        "Epoch %d | Validation Batch %d/%d | Loss %.6f | %s",
                         epoch,
                         batch_idx,
                         len(self.val_loader),
                         float(loss.detach().cpu()),
+                        diagnostics_text,
                     )
 
         elapsed = time.perf_counter() - start_time
         self.model.train()
         avg_loss = epoch_loss / max(valid_batches, 1)
-        all_embeddings, all_labels = self.get_validation_embeddings(split="validation")
-        if len(all_embeddings) > 0:
+        if valid_batches > 0 and diagnostics_totals:
+            averaged_diagnostics = {
+                key: value / valid_batches for key, value in diagnostics_totals.items()
+            }
+            diagnostics_text = " | ".join(
+                f"{key}={value:.3f}" for key, value in averaged_diagnostics.items()
+            )
+            self.logger.info(
+                "Epoch %d | Validation loss diagnostics | %s",
+                epoch,
+                diagnostics_text,
+            )
+        if collected_embeddings:
+            all_embeddings = torch.cat(collected_embeddings, dim=0)
+            all_labels = torch.cat(collected_labels, dim=0)
             recall_at_1 = self._compute_recall_at_k(all_embeddings, all_labels, k=1)
             recall_at_5 = self._compute_recall_at_k(all_embeddings, all_labels, k=5)
         else:

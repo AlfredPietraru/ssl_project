@@ -5,6 +5,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 import json
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("__name__")
 
 
 class DataFetcher:
@@ -56,7 +59,12 @@ class DataFetcher:
         GROUP BY m.identity
         """
         rows = self.execute_query(query, (animal,))
+        identity_to_int = {
+            str(row["identity"]): index
+            for index, row in enumerate(rows)
+        }
         for row in rows:
+            row["identity"] = identity_to_int[str(row["identity"])]
             row["paths"] = json.loads(row["paths"]) if row.get("paths") else []
 
         if not rows:
@@ -71,7 +79,18 @@ class DataFetcher:
             split_index = max(1, min(split_index, len(shuffled_rows) - 1))
 
         train_rows = shuffled_rows[:split_index]
+        only_one_entry_train = 0
+        for row in train_rows:
+            only_one_entry_train = only_one_entry_train + 1 if len(row["paths"]) == 1 else only_one_entry_train
+        logger.warning(f"There are {only_one_entry_train} entities in train with 1 example.")
+        train_rows = list(filter(lambda x: len(x.get("paths", 0)) > 1, train_rows))
+
         val_rows = shuffled_rows[split_index:]
+        only_one_entry_val = 0
+        for row in val_rows:
+            only_one_entry_val = only_one_entry_val + 1 if len(row["paths"]) == 1 else only_one_entry_val
+        logger.warning(f"There are {only_one_entry_val} entities in val with 1 example.")
+
         return train_rows, val_rows
 
 
@@ -86,6 +105,9 @@ if __name__ == "__main__":
     fetcher = DataFetcher()
     # animals = fetcher.get_distinct_animals_split(split='train')
     # print(animals)
-    train_res, val_res = fetcher.get_train_split_animal(animal='loggerhead turtle')
-    print(json.dumps(train_res[:3], indent=2))
-    print(json.dumps(val_res[:3], indent=2))
+    train_res, val_res = fetcher.get_train_split_animal(animal="salamander")
+    print("Train results:", len(train_res))
+    print("Validation results:", len(val_res))
+    # print(json.dumps(train_res[:3], indent=2))
+    # print(json.dumps(val_res[:3], indent=2))
+    # print(len(train_res), len(val_res))
