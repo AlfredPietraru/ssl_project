@@ -5,6 +5,9 @@ import shutil
 from pathlib import Path
 from typing import Sequence
 
+os.environ.setdefault("MPLCONFIGDIR", str(Path("tmp/matplotlib").resolve()))
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+
 import numpy as np
 import torch
 from wildlife_datasets.datasets import AnimalCLEF2026
@@ -14,7 +17,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
 import kagglehub
 from kagglehub.config import get_kaggle_credentials
 from kagglehub.exceptions import KaggleApiHTTPError
-from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 

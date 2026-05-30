@@ -1,8 +1,11 @@
 import logging
 from collections import Counter
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import HDBSCAN
+from sklearn.decomposition import PCA
 from sklearn.metrics import adjusted_rand_score
 
 from main_utils import normalize_rows
@@ -130,3 +133,54 @@ class ClusterAndCompare:
             result["num_noise"],
         )
         return results
+
+    def plot_projection(
+        self,
+        output_path: str | Path,
+        *,
+        title: str,
+        cluster_labels: np.ndarray | None = None,
+    ) -> Path:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        embeddings = self.embeddings.numpy().astype(np.float32)
+        embeddings = normalize_rows(embeddings)
+        projection = PCA(n_components=2, random_state=42).fit_transform(embeddings)
+
+        if cluster_labels is None:
+            color_values = self.labels.numpy().astype(int)
+            colorbar_label = "True identity id"
+        else:
+            if len(cluster_labels) != len(self.labels):
+                raise ValueError(
+                    "cluster_labels must have the same number of rows as embeddings."
+                )
+            color_values = np.asarray(cluster_labels, dtype=int)
+            colorbar_label = "Predicted cluster id"
+
+        unique_values, color_ids = np.unique(color_values, return_inverse=True)
+        fig, ax = plt.subplots(figsize=(10, 8))
+        scatter = ax.scatter(
+            projection[:, 0],
+            projection[:, 1],
+            c=color_ids,
+            cmap="tab20",
+            s=20,
+            alpha=0.75,
+            edgecolors="none",
+        )
+        ax.set_title(title)
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
+        ax.grid(alpha=0.2)
+
+        if len(unique_values) <= 30:
+            colorbar = fig.colorbar(scatter, ax=ax, shrink=0.8)
+            colorbar.set_label(colorbar_label)
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+        logger.info("Saved embedding projection to %s", output_path)
+        return output_path

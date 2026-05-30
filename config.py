@@ -21,33 +21,21 @@ class CFG:
         self.lr = float(data["lr"])  # type: ignore[arg-type]
         self.weight_decay = float(data["weight_decay"])  # type: ignore[arg-type]
         self.temperature = float(data["temperature"])  # type: ignore[arg-type]
-        self.projection_hidden_dim = int(data["projection_hidden_dim"])  # type: ignore[arg-type]
-        self.projection_dropout = float(data["projection_dropout"])  # type: ignore[arg-type]
+        self.triplet_margin = float(data["triplet_margin"])  # type: ignore[arg-type]
+        self.projection_dim = int(data["projection_dim"])  # type: ignore[arg-type]
+        self.metric_loss_weight = float(data["metric_loss_weight"])  # type: ignore[arg-type]
+        self.id_loss_weight = float(data["id_loss_weight"])  # type: ignore[arg-type]
+        self.freeze_backbone = bool(data["freeze_backbone"])
+        self.unfreeze_last_backbone_block = bool(data["unfreeze_last_backbone_block"])
+        self.mode = str(data["mode"])
+        raw_checkpoint_path = data["checkpoint_path"]
+        self.checkpoint_path = None if raw_checkpoint_path is None else str(raw_checkpoint_path)
         self.checkpoint_dir = str(data["checkpoint_dir"])
         self.embedding_checkpoint_path = str(data["embedding_checkpoint_path"])
-        self.embeddings_output_dir = str(data["embeddings_output_dir"])
         raw_max_samples = data["max_samples"]
         self.max_samples = None if raw_max_samples is None else int(raw_max_samples)  # type: ignore[arg-type]
-        self.normalize_embeddings = bool(data["normalize_embeddings"])
-        self.gallery_validation_output_dir = str(data["gallery_validation_output_dir"])
-        self.validation_random_seed = int(data["validation_random_seed"])  # type: ignore[arg-type]
-        self.known_val_ratio = float(data["known_val_ratio"])  # type: ignore[arg-type]
-        self.unseen_val_ratio = float(data["unseen_val_ratio"])  # type: ignore[arg-type]
-        self.thresholds_output_dir = str(data["thresholds_output_dir"])
-        self.threshold_search_steps = int(data["threshold_search_steps"])  # type: ignore[arg-type]
-        self.matching_output_dir = str(data["matching_output_dir"])
-        self.matching_top_k = int(data["matching_top_k"])  # type: ignore[arg-type]
-        self.rejection_output_dir = str(data["rejection_output_dir"])
-        self.clustering_output_dir = str(data["clustering_output_dir"])
-        self.clustering_similarity_threshold = float(data["clustering_similarity_threshold"])  # type: ignore[arg-type]
-        self.clustering_min_cluster_size = int(data["clustering_min_cluster_size"])  # type: ignore[arg-type]
-        self.refinement_output_dir = str(data["refinement_output_dir"])
-        self.refinement_min_cluster_size = int(data["refinement_min_cluster_size"])  # type: ignore[arg-type]
-        self.refinement_min_cluster_similarity = float(data["refinement_min_cluster_similarity"])  # type: ignore[arg-type]
-        self.refinement_known_confidence_threshold = float(data["refinement_known_confidence_threshold"])  # type: ignore[arg-type]
-        self.final_output_dir = str(data["final_output_dir"])
-        self.final_assignments_filename = str(data["final_assignments_filename"])
-
+        
+        
     def to_dict(self) -> dict[str, object]:
         return {
             "root": self.root,
@@ -61,32 +49,18 @@ class CFG:
             "lr": self.lr,
             "weight_decay": self.weight_decay,
             "temperature": self.temperature,
-            "projection_hidden_dim": self.projection_hidden_dim,
-            "projection_dropout": self.projection_dropout,
+            "triplet_margin": self.triplet_margin,
+            "projection_dim": self.projection_dim,
+            "metric_loss_weight": self.metric_loss_weight,
+            "id_loss_weight": self.id_loss_weight,
+            "freeze_backbone": self.freeze_backbone,
+            "unfreeze_last_backbone_block": self.unfreeze_last_backbone_block,
+            "mode": self.mode,
+            "checkpoint_path": self.checkpoint_path,
             "checkpoint_dir": self.checkpoint_dir,
             "device": str(self.device),
             "embedding_checkpoint_path": self.embedding_checkpoint_path,
-            "embeddings_output_dir": self.embeddings_output_dir,
             "max_samples": self.max_samples,
-            "normalize_embeddings": self.normalize_embeddings,
-            "gallery_validation_output_dir": self.gallery_validation_output_dir,
-            "validation_random_seed": self.validation_random_seed,
-            "known_val_ratio": self.known_val_ratio,
-            "unseen_val_ratio": self.unseen_val_ratio,
-            "thresholds_output_dir": self.thresholds_output_dir,
-            "threshold_search_steps": self.threshold_search_steps,
-            "matching_output_dir": self.matching_output_dir,
-            "matching_top_k": self.matching_top_k,
-            "rejection_output_dir": self.rejection_output_dir,
-            "clustering_output_dir": self.clustering_output_dir,
-            "clustering_similarity_threshold": self.clustering_similarity_threshold,
-            "clustering_min_cluster_size": self.clustering_min_cluster_size,
-            "refinement_output_dir": self.refinement_output_dir,
-            "refinement_min_cluster_size": self.refinement_min_cluster_size,
-            "refinement_min_cluster_similarity": self.refinement_min_cluster_similarity,
-            "refinement_known_confidence_threshold": self.refinement_known_confidence_threshold,
-            "final_output_dir": self.final_output_dir,
-            "final_assignments_filename": self.final_assignments_filename,
         }
 
     @staticmethod
@@ -117,31 +91,17 @@ class CFG:
             "lr",
             "weight_decay",
             "temperature",
-            "projection_hidden_dim",
-            "projection_dropout",
+            "triplet_margin",
+            "projection_dim",
+            "metric_loss_weight",
+            "id_loss_weight",
+            "freeze_backbone",
+            "unfreeze_last_backbone_block",
+            "mode",
+            "checkpoint_path",
             "checkpoint_dir",
             "embedding_checkpoint_path",
-            "embeddings_output_dir",
-            "max_samples",
-            "normalize_embeddings",
-            "gallery_validation_output_dir",
-            "validation_random_seed",
-            "known_val_ratio",
-            "unseen_val_ratio",
-            "thresholds_output_dir",
-            "threshold_search_steps",
-            "matching_output_dir",
-            "matching_top_k",
-            "rejection_output_dir",
-            "clustering_output_dir",
-            "clustering_similarity_threshold",
-            "clustering_min_cluster_size",
-            "refinement_output_dir",
-            "refinement_min_cluster_size",
-            "refinement_min_cluster_similarity",
-            "refinement_known_confidence_threshold",
-            "final_output_dir",
-            "final_assignments_filename",
+            "max_samples"
         }
         missing_fields = sorted(required_fields - set(data))
         if missing_fields:

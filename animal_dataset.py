@@ -8,10 +8,6 @@ import logging
 from typing import Any
 from config import CFG
 import warnings
-from transformations import (
-    build_cpu_testing_transform,
-    build_cpu_training_transform,
-)
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
@@ -25,13 +21,11 @@ class MyAnimalDatasetPK(Dataset):
         cfg: CFG,
         cache_all_images: bool = False,
         transform=None,
-        light_transform=None,
     ):
         super().__init__()
         self.metadata = metadata
         self.cfg = cfg
         self.transform = transform or T.ToTensor()
-        self.light_transform = light_transform or build_cpu_testing_transform(self.cfg.image_size)
         self.image_cache: dict[str, Image.Image] = {}
 
         if len(self.metadata) == 0:
@@ -77,9 +71,7 @@ class MyAnimalDatasetPK(Dataset):
             else:
                 image = Image.open(path).convert("RGB")
             augmented_image = self.transform(image.copy())
-            light_image = self.light_transform(image.copy())
             images.append(augmented_image)
-            images.append(light_image)
 
         stacked_images = torch.stack(images, dim=0)
         return stacked_images, torch.tensor(identity, dtype=torch.long)
@@ -148,14 +140,12 @@ def build_pk_train_val_datasets_and_loaders(
         cfg=cfg,
         cache_all_images=cache_all_images,
         transform=train_transform or T.ToTensor(),
-        light_transform=val_transform or build_cpu_testing_transform(cfg.image_size),
     )
     val_dataset = MyAnimalDatasetPK(
         metadata=val_metadata,
         cfg=cfg,
         cache_all_images=cache_all_images,
         transform=val_transform or T.ToTensor(),
-        light_transform=val_transform or build_cpu_testing_transform(cfg.image_size),
     )
     def _pk_collate_fn(batch: list[tuple[torch.Tensor, 
                                          torch.Tensor]]) -> tuple[torch.Tensor, torch.Tensor]:

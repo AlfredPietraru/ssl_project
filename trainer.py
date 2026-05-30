@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader
 import torch
 import torch.nn.functional as F
 from loss_functions import (
-    SupervisedContrastiveLoss,
     BatchHardTripletLoss
 )
 from main_utils import (
@@ -44,16 +43,29 @@ class EmbeddingModelTrainer:
         self.validation_recall_at_1: list[float] = []
         self.validation_recall_at_5: list[float] = []
         self.model = model
+        self.train_identity_to_class_id = self._build_train_identity_to_class_id()
+        if self.cfg.freeze_backbone:
+            if self.cfg.unfreeze_last_backbone_block:
+                self.logger.info(
+                    "Backbone freezing enabled; unfreezing the last backbone block and training the projection head."
+                )
+            else:
+                self.logger.info("Backbone freezing enabled; training head-only parameters.")
         
         self.scaler = torch.GradScaler("cuda", enabled=(self.cfg.device.type == "cuda"))
-        # self.loss_fn = SupervisedContrastiveLoss(
-        #     temperature=cfg.temperature
-        # ).to(cfg.device)
-        self.loss_fn = BatchHardTripletLoss().to(device=cfg.device)
+        self.metric_loss_fn = BatchHardTripletLoss(
+            margin=self.cfg.triplet_margin
+        ).to(device=cfg.device)
+        # self.id_loss_fn = nn.CrossEntropyLoss().to(device=cfg.device)
 
+        trainable_parameters = [
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        ]
+        if not trainable_parameters:
+            raise ValueError("No trainable parameters remain after applying freeze settings.")
 
         self.optimizer = torch.optim.NAdam(
-            model.parameters(),  # type: ignore
+            trainable_parameters,  # type: ignore[arg-type]
             lr=self.cfg.lr,
             weight_decay=self.cfg.weight_decay,
         )
@@ -63,6 +75,25 @@ class EmbeddingModelTrainer:
             eta_min=max(self.cfg.lr * 0.1, 1e-7),
         )
         self.plotter = HarryPlotter(save_name="simclr_loss.png")
+
+    def _build_train_identity_to_class_id(self) -> dict[int, int]:
+        dataset = getattr(self.train_loader, "dataset", None)
+        metadata = getattr(dataset, "metadata", None)
+        if metadata is None:
+            raise ValueError("Training loader dataset does not expose metadata for class-id mapping.")
+
+        train_identities = sorted({int(item["identity"]) for item in metadata})
+        return {
+            identity: class_id
+            for class_id, identity in enumerate(train_identities)
+        }
+
+    def _map_labels_to_train_class_ids(self, labels: torch.Tensor) -> torch.Tensor:
+        mapped = [
+            self.train_identity_to_class_id[int(label)]
+            for label in labels.detach().cpu().tolist()
+        ]
+        return torch.tensor(mapped, dtype=torch.long, device=labels.device)
 
     def train(self) -> ContrastiveEmbeddingModel:
         best_loss = float("inf")
@@ -146,15 +177,20 @@ class EmbeddingModelTrainer:
         start_time = time.perf_counter()
         diagnostics_totals: dict[str, float] = {}
         last_batch_diagnostics: dict[str, float] = {}
+        self.model.train()
 
         for batch_idx, (images, labels) in enumerate(self.train_loader, start=1):
             images = images.to(self.cfg.device, non_blocking=True)
             labels = labels.to(self.cfg.device, non_blocking=True)
+            class_labels = self._map_labels_to_train_class_ids(labels)
             self.optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast("cuda", enabled=(self.cfg.device.type == "cuda")):
-                projections = self.model(images)
-                loss = self.loss_fn(projections, labels)
+                embeddings, logits = self.model.forward_with_logits(images)
+                metric_loss = self.metric_loss_fn(embeddings, labels)
+                # id_loss = self.id_loss_fn(logits, class_labels)
+                id_loss = torch.zeros((), device=labels.device, dtype=metric_loss.dtype)
+                loss = self.cfg.metric_loss_weight * metric_loss
 
             if not torch.isfinite(loss):
                 self.logger.warning("Skipping non-finite loss at batch %d: %s", batch_idx, loss.item())
@@ -167,7 +203,10 @@ class EmbeddingModelTrainer:
 
             epoch_loss += float(loss.detach().cpu())
             valid_batches += 1
-            batch_diagnostics = self.loss_fn.diagnostics(projections.detach(), labels.detach())
+            batch_diagnostics = self.metric_loss_fn.diagnostics(embeddings.detach(), labels.detach())
+            batch_diagnostics["metric_loss"] = float(metric_loss.detach().cpu())
+            batch_diagnostics["id_loss"] = float(id_loss.detach().cpu())
+            batch_diagnostics["total_loss"] = float(loss.detach().cpu())
             last_batch_diagnostics = batch_diagnostics
             for key, value in batch_diagnostics.items():
                 diagnostics_totals[key] = diagnostics_totals.get(key, 0.0) + value
@@ -268,8 +307,10 @@ class EmbeddingModelTrainer:
                 labels = labels.to(self.cfg.device, non_blocking=True)
 
                 with torch.autocast("cuda", enabled=(self.cfg.device.type == "cuda")):
-                    projections = self.model(images)
-                    loss = self.loss_fn(projections, labels)
+                    embeddings, logits = self.model.forward_with_logits(images)
+                    metric_loss = self.metric_loss_fn(embeddings, labels)
+                    id_loss = torch.zeros((), device=labels.device, dtype=metric_loss.dtype)
+                    loss = self.cfg.metric_loss_weight * metric_loss
 
                 if not torch.isfinite(loss):
                     self.logger.warning(
@@ -281,7 +322,10 @@ class EmbeddingModelTrainer:
 
                 epoch_loss += float(loss.detach().cpu())
                 valid_batches += 1
-                batch_diagnostics = self.loss_fn.diagnostics(projections.detach(), labels.detach())
+                batch_diagnostics = self.metric_loss_fn.diagnostics(embeddings.detach(), labels.detach())
+                batch_diagnostics["metric_loss"] = float(metric_loss.detach().cpu())
+                batch_diagnostics["id_loss"] = float(id_loss.detach().cpu())
+                batch_diagnostics["total_loss"] = float(loss.detach().cpu())
                 for key, value in batch_diagnostics.items():
                     diagnostics_totals[key] = diagnostics_totals.get(key, 0.0) + value
 
